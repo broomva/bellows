@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — autonomous tool-use loop (v0.2-pre)
+
+- **`StepCtx::step()`** — scopes a child [`Step`] under its own tracing
+  span and delegates to the step's `run` body. The canonical way for
+  `Workflow::execute` to orchestrate inner steps.
+- **`StepCtx::run_inference()`** — drives the autonomous loop:
+  build `ModelRequest` → call provider → if `tool_use`, dispatch each
+  tool against the sandbox and append a `MsgRole::Tool` results
+  message → repeat until a non-tool stop reason or `max_turns` hits.
+  Errors from individual tools surface to the model as
+  `tool_result { is_error: true }` so the agent can recover rather than
+  the workflow crashing.
+- **`InferenceRequest`** builder — `with_role`, `with_max_tokens`,
+  `with_temperature`, `with_max_turns`. `DEFAULT_INFERENCE_MAX_TURNS = 16`.
+- **`AnthropicProvider`** now serialises `ModelRequest::tools` as
+  Anthropic's `input_schema` format and re-emits assistant `tool_use`
+  blocks alongside subsequent `tool_result` blocks so call ids correlate.
+- **Transport-error chaining** — `BellowsError::Model` includes the
+  full `source` chain when `reqwest` fails (was hiding the underlying
+  hyper / connection cause).
+- **`examples/repo-scout`** — end-to-end demo of the autonomous tool
+  loop. Claude calls `fs_list` and `fs_read` against `LocalSandbox`,
+  inspects an arbitrary repo path, and returns a structured summary
+  with the files it actually opened.
+
+### Validated — autonomous tool loop
+
+- **Real Claude executed real tool calls** via the bellows-core dispatch
+  loop. Two scenarios:
+  - *"Summarize this project"* → 3 turns, `fs_read` x3 (README,
+    Cargo.toml, LICENSE), correct workspace summary.
+  - *"What traits does bellows-core define?"* → 4 turns, `fs_read` x4
+    (crate README, Cargo.toml, lib.rs, workflow.rs), accurate
+    enumeration of all 7 traits + the dependency-posture rule.
+- Session history correctly threaded `tool_use` ↔ `tool_result` pairs
+  across multiple turns; tool errors round-trip as
+  `is_error: true` results without aborting the loop.
+
 ### Added
 
 - **`bellows-model::AnthropicProvider`** — real Messages API connector.

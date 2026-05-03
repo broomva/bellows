@@ -127,11 +127,16 @@ impl ModelProvider for AnthropicProvider {
             }
         }
 
-        let resp = req
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BellowsError::Model(format!("transport: {e}")))?;
+        let resp = req.json(&body).send().await.map_err(|e| {
+            let mut msg = format!("transport: {e}");
+            let mut src: &dyn std::error::Error = &e;
+            while let Some(s) = src.source() {
+                msg.push_str(" -> ");
+                msg.push_str(&s.to_string());
+                src = s;
+            }
+            BellowsError::Model(msg)
+        })?;
 
         let status = resp.status();
         let bytes = resp
@@ -199,6 +204,11 @@ enum AnthropicContentBlock {
     Text {
         text: String,
     },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -255,7 +265,17 @@ fn build_request_body(req: &ModelRequest) -> AnthropicMessageRequest<'_> {
         system: req.role.as_ref().and_then(bellows_core::Role::render),
         temperature: req.temperature,
         stop_sequences: req.stop.clone(),
-        tools: Vec::new(), // tool support lands in v0.2
+        tools: req
+            .tools
+            .iter()
+            .map(|schema| {
+                serde_json::json!({
+                    "name":         schema.name,
+                    "description":  schema.description,
+                    "input_schema": schema.parameters,
+                })
+            })
+            .collect(),
     }
 }
 
@@ -269,6 +289,15 @@ fn message_to_wire(m: &Message) -> AnthropicWireMessage {
     if !m.content.is_empty() {
         content.push(AnthropicContentBlock::Text {
             text: m.content.clone(),
+        });
+    }
+    // Re-emit assistant tool_use blocks so Anthropic can correlate the
+    // upcoming tool_result blocks back to their originating tool_use ids.
+    for tc in &m.tool_calls {
+        content.push(AnthropicContentBlock::ToolUse {
+            id: tc.id.clone(),
+            name: tc.name.clone(),
+            input: tc.arguments.clone(),
         });
     }
     for tr in &m.tool_results {

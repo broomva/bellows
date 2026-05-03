@@ -44,6 +44,6 @@ pub use role::{Role, RoleScope};
 pub use sandbox::{DirEntry, ExecOpts, ExecResult, Sandbox};
 pub use session::{Session, SessionId, SessionStore};
 pub use skill::{Skill, SkillSet};
-pub use step::{Step, StepCtx};
+pub use step::{DEFAULT_INFERENCE_MAX_TURNS, InferenceRequest, Step, StepCtx};
 pub use tool::{Tool, ToolRegistry, ToolSchema};
 pub use workflow::Workflow;

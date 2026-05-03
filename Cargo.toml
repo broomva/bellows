@@ -16,6 +16,7 @@ members = [
     # "crates/bellows-macros",           # proc-macros, v0.2
     "crates/bellows-cli",
     "examples/issue-triage",
+    "examples/repo-scout",
 ]
 
 [workspace.package]

@@ -1,0 +1,27 @@
+[package]
+name        = "bellows-example-repo-scout"
+description = "End-to-end demo of the autonomous tool-use loop — Claude reads files via the sandbox to summarize a repo."
+version     = "0.0.0"
+edition     = { workspace = true }
+rust-version = { workspace = true }
+license     = { workspace = true }
+publish     = false
+
+[[bin]]
+name = "repo-scout"
+path = "src/main.rs"
+
+[dependencies]
+bellows-core           = { path = "../../crates/bellows-core" }
+bellows-model          = { path = "../../crates/bellows-model" }
+bellows-runtime        = { path = "../../crates/bellows-runtime" }
+bellows-sandbox        = { path = "../../crates/bellows-sandbox" }
+bellows-sandbox-local  = { path = "../../crates/bellows-sandbox-local" }
+bellows-session        = { path = "../../crates/bellows-session" }
+bellows-tool           = { path = "../../crates/bellows-tool" }
+
+async-trait = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing-subscriber = { workspace = true }
