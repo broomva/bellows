@@ -1,0 +1,21 @@
+[package]
+name        = "bellows-server"
+description = "Axum HTTP server wrapping a Bellows workflow into a deployable artifact."
+version     = { workspace = true }
+edition     = { workspace = true }
+rust-version = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+
+[dependencies]
+bellows-core    = { path = "../bellows-core", version = "0.1.0-pre" }
+bellows-runtime = { path = "../bellows-runtime", version = "0.1.0-pre" }
+bellows-session = { path = "../bellows-session", version = "0.1.0-pre" }
+axum            = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+tokio           = { workspace = true, features = ["rt-multi-thread", "net", "signal", "macros"] }
+tracing         = { workspace = true }
+
+[lints]
+workspace = true

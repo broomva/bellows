@@ -1,0 +1,20 @@
+[package]
+name        = "bellows-skill"
+description = "Markdown skill loader for the Bellows agent-harness framework."
+version     = { workspace = true }
+edition     = { workspace = true }
+rust-version = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+
+[dependencies]
+bellows-core   = { path = "../bellows-core", version = "0.1.0-pre" }
+pulldown-cmark = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+serde_yaml_ng  = { workspace = true }
+thiserror      = { workspace = true }
+include_dir    = { workspace = true }
+
+[lints]
+workspace = true

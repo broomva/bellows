@@ -1,0 +1,18 @@
+[package]
+name        = "bellows-sandbox-local"
+description = "Local-process sandbox (subprocess + cwd jail) for the Bellows agent-harness framework."
+version     = { workspace = true }
+edition     = { workspace = true }
+rust-version = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+
+[dependencies]
+bellows-core    = { path = "../bellows-core", version = "0.1.0-pre" }
+bellows-sandbox = { path = "../bellows-sandbox", version = "0.1.0-pre" }
+async-trait     = { workspace = true }
+serde           = { workspace = true }
+tokio           = { workspace = true, features = ["fs", "io-util", "process", "rt", "time"] }
+
+[lints]
+workspace = true

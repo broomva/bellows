@@ -1,0 +1,114 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/bellows-core",
+    "crates/bellows-skill",
+    "crates/bellows-session",
+    "crates/bellows-model",
+    "crates/bellows-sandbox",
+    "crates/bellows-sandbox-local",
+    # "crates/bellows-sandbox-docker",   # feature-gated, scaffolded in v0.2
+    # "crates/bellows-sandbox-e2b",      # feature-gated, scaffolded in v0.2
+    "crates/bellows-tool",
+    "crates/bellows-runtime",
+    "crates/bellows-server",
+    # "crates/bellows-build",            # codegen + cargo orchestration, v0.2
+    # "crates/bellows-macros",           # proc-macros, v0.2
+    "crates/bellows-cli",
+    "examples/issue-triage",
+]
+
+[workspace.package]
+version      = "0.1.0-pre"
+edition      = "2024"
+rust-version = "1.85"
+license      = "Apache-2.0"
+repository   = "https://github.com/broomva/bellows"
+homepage     = "https://github.com/broomva/bellows"
+authors      = ["Broomva Tech Corp <hello@broomva.tech>"]
+readme       = "README.md"
+keywords     = ["agent", "harness", "llm", "ai", "workflow"]
+categories   = ["development-tools", "asynchronous"]
+
+[workspace.dependencies]
+# ── Async runtime ────────────────────────────────────────────────────────────
+tokio        = { version = "1.42", default-features = false }
+async-trait  = "0.1"
+futures      = "0.3"
+
+# ── Web ──────────────────────────────────────────────────────────────────────
+axum         = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+tower        = "0.5"
+tower-http   = { version = "0.6", default-features = false }
+hyper        = { version = "1", default-features = false }
+reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "gzip"] }
+eventsource-stream = "0.2"
+
+# ── Serialization ────────────────────────────────────────────────────────────
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+toml             = "0.8"
+serde_yaml_ng    = "0.10"            # maintained fork of dtolnay/serde_yaml
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+clap         = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+
+# ── Errors ───────────────────────────────────────────────────────────────────
+thiserror    = "2"
+anyhow       = "1"
+miette       = { version = "7", features = ["fancy"] }
+
+# ── Tracing ──────────────────────────────────────────────────────────────────
+tracing                 = "0.1"
+tracing-subscriber      = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry   = "0.27"
+opentelemetry           = "0.27"
+opentelemetry-otlp      = { version = "0.27", default-features = false, features = ["grpc-tonic"] }
+
+# ── Markdown / Skills ────────────────────────────────────────────────────────
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+include_dir    = "0.7"
+
+# ── IDs / Hashing ────────────────────────────────────────────────────────────
+ulid   = { version = "1", features = ["serde"] }
+blake3 = "1"
+
+# ── MCP ──────────────────────────────────────────────────────────────────────
+rmcp = { version = "0.15", default-features = false }
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+insta      = "1.40"
+wiremock   = "0.6"
+assert_cmd = "2"
+predicates = "3"
+tempfile   = "3"
+
+[workspace.lints.rust]
+unsafe_code            = "forbid"
+missing_docs           = "warn"
+unreachable_pub        = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+pedantic       = { level = "warn", priority = -1 }
+nursery        = { level = "warn", priority = -1 }
+cargo          = { level = "warn", priority = -1 }
+unwrap_used    = "deny"
+expect_used    = "deny"
+panic          = "deny"
+todo           = "warn"
+dbg_macro      = "deny"
+# Pragmatic exceptions
+module_name_repetitions = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+multiple_crate_versions = "allow"
+
+[profile.release]
+lto             = "thin"
+codegen-units   = 1
+strip           = "symbols"
+panic           = "abort"
+
+[profile.dev]
+debug = "line-tables-only"

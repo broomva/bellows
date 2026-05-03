@@ -1,0 +1,129 @@
+# Bellows control policy — governed profile (greenfield framework crate)
+# Stricter than core/life/ because every release goes to crates.io.
+# Setpoints calibrated for v0.1 → v0.2 cadence.
+
+profile: governed
+plant_id: bellows
+version:  "0.1.0-pre"
+
+# ── Setpoints ────────────────────────────────────────────────────────────────
+# Every metric the control loop steers toward.
+setpoints:
+  # CI gates — hard requirements before merge.
+  build_pass_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+    description: "cargo check --workspace must pass on every PR"
+
+  test_pass_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+    description: "cargo test --workspace must pass on every PR"
+
+  clippy_clean_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+    description: "cargo clippy --all-targets -- -D warnings must pass"
+
+  fmt_clean_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+    description: "cargo fmt --check must pass"
+
+  license_audit_pass_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+    description: "cargo deny check licenses must pass — Apache-2.0 / MIT / BSD only"
+
+  # Contract stability — a soft setpoint that turns into a blocker if violated.
+  bellows_core_breaking_changes_per_minor:
+    target: 0
+    alert: "> 0"
+    severity: blocking
+    description: "bellows-core only takes breaking changes at major versions"
+
+  # Documentation coherence
+  doc_xref_drift_rate:
+    target: 0.00
+    alert: "> 0.00"
+    severity: warn
+    description: "ARCHITECTURE/DEPENDENCY-CHAIN/ROADMAP must agree on layer counts and version targets"
+
+  # Sandbox honesty — every sandbox impl must declare posture in SANDBOX-POSTURE.md
+  sandbox_posture_documented_rate:
+    target: 1.00
+    alert: "< 1.00"
+    severity: blocking
+
+  # Crates.io readiness (relaxes after first publish)
+  publishable_crate_count:
+    target: 10  # bellows-core + 8 siblings + cli
+    alert: "< 10"
+    severity: info
+
+# ── Gates ────────────────────────────────────────────────────────────────────
+# Concrete checks the harness runs.
+gates:
+  G1_build:
+    cmd: "cargo check --workspace"
+    blocks: ["push", "merge"]
+  G2_test:
+    cmd: "cargo test --workspace"
+    blocks: ["merge"]
+  G3_clippy:
+    cmd: "cargo clippy --workspace --all-targets -- -D warnings"
+    blocks: ["merge"]
+  G4_fmt:
+    cmd: "cargo fmt --all -- --check"
+    blocks: ["merge"]
+  G5_deny:
+    cmd: "cargo deny check"
+    blocks: ["merge"]
+  G6_contract_review:
+    rule: "PRs touching crates/bellows-core/ require explicit review approval + CHANGELOG entry"
+    blocks: ["merge"]
+  G7_docs_xref:
+    rule: "PRs touching docs/ARCHITECTURE.md, docs/DEPENDENCY-CHAIN.md, docs/ROADMAP.md must update all three together if a layer count, dep, or version target changes"
+    blocks: ["merge"]
+  G8_sandbox_honesty:
+    rule: "PRs adding a Sandbox impl must update docs/SANDBOX-POSTURE.md in the same commit"
+    blocks: ["merge"]
+
+# ── Profiles ─────────────────────────────────────────────────────────────────
+# Per-context relaxations / tightenings.
+profiles:
+  baseline:
+    description: "early development; G6+G7+G8 are warnings not blockers"
+    overrides:
+      gates:
+        G6_contract_review.blocks: []
+        G7_docs_xref.blocks: []
+        G8_sandbox_honesty.blocks: []
+  governed:
+    description: "default. all gates blocking. v0.1 cadence."
+  autonomous:
+    description: "post-1.0; agents land contract changes via dispatched-PR with controller approval. not yet active."
+
+active_profile: governed
+
+# ── Shields ──────────────────────────────────────────────────────────────────
+# Safety filters between LLM intent and applied action.
+# (Bellows the framework doesn't run an LLM in development — these are inert
+# until/unless we wire LLM-driven contributions to this repo via Symphony.)
+shields:
+  contract_change_shield:
+    activates_on: "edits under crates/bellows-core/"
+    behavior: "require human approval; no autonomous-merge of contract deltas"
+
+  workspace_dep_shield:
+    activates_on: "edits to [workspace.dependencies] in Cargo.toml"
+    behavior: "block unless docs/DEPENDENCY-CHAIN.md updated in same diff"
+
+  license_shield:
+    activates_on: "any new dependency"
+    behavior: "block on deny.toml license-list violation"

@@ -1,0 +1,22 @@
+[package]
+name        = "bellows-runtime"
+description = "Workflow engine for the Bellows agent-harness framework."
+version     = { workspace = true }
+edition     = { workspace = true }
+rust-version = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+
+[dependencies]
+bellows-core    = { path = "../bellows-core", version = "0.1.0-pre" }
+bellows-session = { path = "../bellows-session", version = "0.1.0-pre" }
+bellows-tool    = { path = "../bellows-tool", version = "0.1.0-pre" }
+async-trait     = { workspace = true }
+futures         = { workspace = true }
+serde           = { workspace = true }
+serde_json      = { workspace = true }
+tokio           = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+tracing         = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,100 @@
+# Bellows plant interface — what the control kernel observes and acts on.
+# In control-systems language: this declares the typed state and action
+# spaces of the system being governed.
+
+plant_id: bellows
+plant_type: cyber  # discrete-state, human/CI cadence
+description: |
+  Bellows is a Rust agent-harness framework. As a "plant" under the
+  agentic control kernel, the system being governed is the repository
+  itself — its source, docs, dependency tree, and release lifecycle.
+
+# ── State ────────────────────────────────────────────────────────────────────
+# Belief state the controller observes. Sensors below populate these.
+state:
+  build_status:
+    type: enum
+    values: [green, yellow, red]
+    description: "result of last `cargo check --workspace`"
+  test_status:
+    type: enum
+    values: [green, yellow, red]
+  clippy_status:
+    type: enum
+    values: [green, yellow, red]
+  contract_version:
+    type: semver
+    description: "current version of bellows-core"
+  workspace_member_count:
+    type: integer
+  open_research_flag_count:
+    type: integer
+    description: "RF-* entries in docs/DEPENDENCY-CHAIN.md not yet resolved"
+  doc_xref_drift_count:
+    type: integer
+    description: "instances where ARCHITECTURE/DEPENDENCY-CHAIN/ROADMAP disagree"
+
+# ── Actions ──────────────────────────────────────────────────────────────────
+# Typed control directives the controller may emit.
+# These are the only mutations agents may propose against the plant.
+actions:
+  add_workspace_crate:
+    description: "create a new crate under crates/ with the conventional shape"
+    parameters:
+      name: { type: string, required: true }
+      single_responsibility: { type: string, required: true }
+  edit_contract:
+    description: "modify a public type/trait in bellows-core"
+    parameters:
+      breaking: { type: bool, required: true }
+      changelog_entry: { type: string, required: true }
+  bump_dependency:
+    description: "update a workspace dep in Cargo.toml"
+    parameters:
+      crate: { type: string, required: true }
+      from_version: { type: semver, required: true }
+      to_version: { type: semver, required: true }
+      reason: { type: string, required: true }
+  promote_research_flag:
+    description: "resolve an RF-* entry in docs/DEPENDENCY-CHAIN.md"
+    parameters:
+      flag_id: { type: string, required: true }
+      resolution: { type: string, required: true }
+  release:
+    description: "tag + publish the workspace"
+    parameters:
+      version: { type: semver, required: true }
+
+# ── Sensors ──────────────────────────────────────────────────────────────────
+sensors:
+  cargo_check:
+    cmd: "cargo check --workspace"
+    cadence: pre-push
+  cargo_test:
+    cmd: "cargo test --workspace"
+    cadence: pre-merge
+  cargo_clippy:
+    cmd: "cargo clippy --workspace --all-targets -- -D warnings"
+    cadence: pre-merge
+  cargo_deny:
+    cmd: "cargo deny check"
+    cadence: pre-merge
+  doc_xref_audit:
+    cmd: "scripts/check-doc-xref.sh"  # to be written; auditor of layer counts
+    cadence: pre-merge
+
+# ── Multi-rate hierarchy ─────────────────────────────────────────────────────
+# What runs at what cadence. LLMs only enter at the supervisory + meta layers.
+loops:
+  inner:
+    cadence: n/a
+    runs: nothing  # cyber plant
+  mid:
+    cadence: n/a
+    runs: nothing
+  supervisory:
+    cadence: per-PR
+    llm_role: "review proposed diff against docs and gates; flag contract changes"
+  meta:
+    cadence: per-release
+    llm_role: "synthesize CHANGELOG; propose follow-up RF-* resolutions"
