@@ -87,19 +87,22 @@ impl Sandbox for LocalSandbox {
             }
         }
 
-        let output = match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output()).await {
-            Ok(Ok(out)) => Ok(out),
-            Ok(Err(e)) => Err(BellowsError::from(e)),
-            Err(_) => {
-                return Ok(ExecResult {
-                    exit_code: None,
-                    stdout: String::new(),
-                    stderr: format!("[bellows] killed: timeout after {timeout_ms}ms"),
-                    killed: true,
-                    duration_ms: timeout_ms,
-                });
-            }
-        }?;
+        let output =
+            match tokio::time::timeout(Duration::from_millis(timeout_ms), child.wait_with_output())
+                .await
+            {
+                Ok(Ok(out)) => Ok(out),
+                Ok(Err(e)) => Err(BellowsError::from(e)),
+                Err(_) => {
+                    return Ok(ExecResult {
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: format!("[bellows] killed: timeout after {timeout_ms}ms"),
+                        killed: true,
+                        duration_ms: timeout_ms,
+                    });
+                }
+            }?;
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         Ok(ExecResult {
@@ -120,9 +123,13 @@ impl Sandbox for LocalSandbox {
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let resolved = self.resolve(path);
         if let Some(parent) = resolved.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(BellowsError::from)?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(BellowsError::from)?;
         }
-        tokio::fs::write(resolved, bytes).await.map_err(BellowsError::from)
+        tokio::fs::write(resolved, bytes)
+            .await
+            .map_err(BellowsError::from)
     }
 
     async fn list(&self, path: &str) -> Result<Vec<DirEntry>> {
@@ -135,7 +142,11 @@ impl Sandbox for LocalSandbox {
             out.push(DirEntry {
                 path: entry.path().to_string_lossy().into_owned(),
                 is_dir: meta.is_dir(),
-                size: if meta.is_dir() { None } else { Some(meta.len()) },
+                size: if meta.is_dir() {
+                    None
+                } else {
+                    Some(meta.len())
+                },
             });
         }
         Ok(out)

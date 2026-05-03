@@ -78,8 +78,8 @@ impl SkillSet for SkillBundle {
 pub fn parse_skill(name: &str, source: &str) -> Result<Skill, SkillError> {
     let (frontmatter_str, body) = split_frontmatter(name, source)?;
 
-    let frontmatter: serde_json::Value = serde_yaml_ng::from_str(frontmatter_str)
-        .map_err(|source| SkillError::Yaml {
+    let frontmatter: serde_json::Value =
+        serde_yaml_ng::from_str(frontmatter_str).map_err(|source| SkillError::Yaml {
             file: name.to_string(),
             source,
         })?;
@@ -95,10 +95,12 @@ pub fn parse_skill(name: &str, source: &str) -> Result<Skill, SkillError> {
 /// Frontmatter is required to be present and to be the very first thing in
 /// the file — `---\n...\n---\n`. Anything else is rejected.
 fn split_frontmatter<'a>(name: &str, source: &'a str) -> Result<(&'a str, &'a str), SkillError> {
-    let rest = source.strip_prefix("---\n").ok_or_else(|| SkillError::BadFrontmatter {
-        file: name.to_string(),
-        reason: "missing leading `---\\n` marker".to_string(),
-    })?;
+    let rest = source
+        .strip_prefix("---\n")
+        .ok_or_else(|| SkillError::BadFrontmatter {
+            file: name.to_string(),
+            reason: "missing leading `---\\n` marker".to_string(),
+        })?;
     let end_idx = rest
         .find("\n---\n")
         .or_else(|| rest.find("\n---"))
@@ -138,6 +140,7 @@ pub fn load_dir(dir: impl AsRef<std::path::Path>) -> Result<SkillBundle, SkillEr
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -145,7 +148,7 @@ mod tests {
 
     #[test]
     fn parse_minimal_skill() {
-        let s = parse_skill("triage", SAMPLE).expect("parse");
+        let s = parse_skill("triage", SAMPLE).unwrap();
         assert_eq!(s.name, "triage");
         assert_eq!(s.frontmatter["name"], "triage");
         assert_eq!(s.frontmatter["version"], 1);

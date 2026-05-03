@@ -131,4 +131,3 @@ pub trait ModelProvider: Send + Sync {
     /// `ModelStreamEvent::EndTurn`.
     async fn stream(&self, request: ModelRequest) -> Result<ModelStream>;
 }
-

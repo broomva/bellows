@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bellows-model::AnthropicProvider`** — real Messages API connector.
+  Two auth modes: `AnthropicAuth::ApiKey` (`x-api-key` header for
+  `sk-ant-api03-...` keys) and `AnthropicAuth::OAuthBearer`
+  (`Authorization: Bearer` + `anthropic-beta: oauth-...` for Claude Code
+  subscription tokens). `AnthropicAuth::from_env()` resolves either.
+- Example `issue-triage` now uses `AnthropicProvider` when credentials
+  are present, falls back to `MockProvider` otherwise. Output now
+  carries the resolved provider id and reported token usage.
+- Workspace lint config: explicit `allow` list for cosmetic clippy
+  pedantic noise; `unwrap_used`/`expect_used`/`panic`/`dbg_macro`
+  remain `deny` in non-test code.
+
+### Changed
+
+- `RoleScope::Agent` now uses `#[default]` (was a manual `Default` impl).
+- `Role::merge` precedence selection inlined to avoid `or_fun_call`.
+- `ModelProvider::id` returns `&'static str` (was `&str`).
+- `Sandbox::name` for `VirtualSandbox` returns `&'static str`.
+- `rustfmt.toml`: removed nightly-only `imports_granularity` /
+  `group_imports` keys.
+
+### Validated
+
+- **End-to-end against real Claude** (claude-haiku-4-5 via the OAuth
+  bearer auth path). Three distinct scenarios returned correctly
+  classified, structured JSON output with token-usage reporting.
+- All gates pass: `cargo check`, `cargo test --workspace --lib` (6/6),
+  `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo fmt --check`.
+
 ## [0.1.0-pre] — 2026-05-03
 
 ### Added

@@ -5,6 +5,6 @@ tab_spaces       = 4
 newline_style    = "Unix"
 use_field_init_shorthand = true
 use_try_shorthand        = true
-imports_granularity      = "Crate"
-group_imports            = "StdExternalCrate"
 reorder_imports          = true
+# imports_granularity / group_imports are nightly-only (rustfmt 1.7+ stable
+# does not support them yet). Re-enable when stable.

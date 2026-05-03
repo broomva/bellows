@@ -44,8 +44,9 @@ fn main() -> Result<()> {
         1 => "debug",
         _ => "trace",
     };
+    let filter = tracing_subscriber::EnvFilter::new(level);
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(level))
+        .with_env_filter(filter)
         .compact()
         .init();
 

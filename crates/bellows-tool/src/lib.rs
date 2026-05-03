@@ -24,7 +24,9 @@ pub struct SimpleRegistry {
 impl std::fmt::Debug for SimpleRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let names: Vec<String> = self.tools.iter().map(|t| t.schema().name).collect();
-        f.debug_struct("SimpleRegistry").field("tools", &names).finish()
+        f.debug_struct("SimpleRegistry")
+            .field("tools", &names)
+            .finish()
     }
 }
 
@@ -69,7 +71,8 @@ impl Tool for BashTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "bash".to_string(),
-            description: "Execute a shell command in the agent's sandbox and return stdout/stderr.".to_string(),
+            description: "Execute a shell command in the agent's sandbox and return stdout/stderr."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "required": ["cmd"],
@@ -82,7 +85,11 @@ impl Tool for BashTool {
         }
     }
 
-    async fn invoke(&self, args: serde_json::Value, sandbox: &dyn Sandbox) -> Result<serde_json::Value> {
+    async fn invoke(
+        &self,
+        args: serde_json::Value,
+        sandbox: &dyn Sandbox,
+    ) -> Result<serde_json::Value> {
         let cmd = args
             .get("cmd")
             .and_then(serde_json::Value::as_str)
@@ -119,11 +126,18 @@ impl Tool for FsReadTool {
         }
     }
 
-    async fn invoke(&self, args: serde_json::Value, sandbox: &dyn Sandbox) -> Result<serde_json::Value> {
-        let path = args.get("path").and_then(serde_json::Value::as_str).ok_or_else(|| BellowsError::Tool {
-            name: "fs_read".to_string(),
-            reason: "missing required `path` argument".to_string(),
-        })?;
+    async fn invoke(
+        &self,
+        args: serde_json::Value,
+        sandbox: &dyn Sandbox,
+    ) -> Result<serde_json::Value> {
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BellowsError::Tool {
+                name: "fs_read".to_string(),
+                reason: "missing required `path` argument".to_string(),
+            })?;
         let bytes = sandbox.read(path).await?;
         let text = String::from_utf8_lossy(&bytes).into_owned();
         Ok(json!({ "path": path, "content": text }))
@@ -139,7 +153,8 @@ impl Tool for FsWriteTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema {
             name: "fs_write".to_string(),
-            description: "Write a file in the agent's sandbox. Creates parent dirs as needed.".to_string(),
+            description: "Write a file in the agent's sandbox. Creates parent dirs as needed."
+                .to_string(),
             parameters: json!({
                 "type": "object",
                 "required": ["path", "content"],
@@ -151,15 +166,25 @@ impl Tool for FsWriteTool {
         }
     }
 
-    async fn invoke(&self, args: serde_json::Value, sandbox: &dyn Sandbox) -> Result<serde_json::Value> {
-        let path = args.get("path").and_then(serde_json::Value::as_str).ok_or_else(|| BellowsError::Tool {
-            name: "fs_write".to_string(),
-            reason: "missing required `path` argument".to_string(),
-        })?;
-        let content = args.get("content").and_then(serde_json::Value::as_str).ok_or_else(|| BellowsError::Tool {
-            name: "fs_write".to_string(),
-            reason: "missing required `content` argument".to_string(),
-        })?;
+    async fn invoke(
+        &self,
+        args: serde_json::Value,
+        sandbox: &dyn Sandbox,
+    ) -> Result<serde_json::Value> {
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BellowsError::Tool {
+                name: "fs_write".to_string(),
+                reason: "missing required `path` argument".to_string(),
+            })?;
+        let content = args
+            .get("content")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BellowsError::Tool {
+                name: "fs_write".to_string(),
+                reason: "missing required `content` argument".to_string(),
+            })?;
         sandbox.write(path, content.as_bytes()).await?;
         Ok(json!({ "path": path, "written": content.len() }))
     }
@@ -183,11 +208,18 @@ impl Tool for FsListTool {
         }
     }
 
-    async fn invoke(&self, args: serde_json::Value, sandbox: &dyn Sandbox) -> Result<serde_json::Value> {
-        let path = args.get("path").and_then(serde_json::Value::as_str).ok_or_else(|| BellowsError::Tool {
-            name: "fs_list".to_string(),
-            reason: "missing required `path` argument".to_string(),
-        })?;
+    async fn invoke(
+        &self,
+        args: serde_json::Value,
+        sandbox: &dyn Sandbox,
+    ) -> Result<serde_json::Value> {
+        let path = args
+            .get("path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BellowsError::Tool {
+                name: "fs_list".to_string(),
+                reason: "missing required `path` argument".to_string(),
+            })?;
         let entries = sandbox.list(path).await?;
         Ok(json!({ "path": path, "entries": entries }))
     }

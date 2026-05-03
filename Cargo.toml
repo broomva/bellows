@@ -98,11 +98,32 @@ expect_used    = "deny"
 panic          = "deny"
 todo           = "warn"
 dbg_macro      = "deny"
-# Pragmatic exceptions
+# Trade-offs accepted in v0.1
+needless_lifetimes      = "allow"
+redundant_clone         = "allow"
+struct_field_names      = "allow"
+match_same_arms         = "allow"
+# Pragmatic exceptions — the load-bearing denies above (unwrap/expect/panic/dbg)
+# are what catches real bugs. The lints below are cosmetic noise that adds
+# review friction without preventing defects.
 module_name_repetitions = "allow"
 missing_errors_doc      = "allow"
 missing_panics_doc      = "allow"
 multiple_crate_versions = "allow"
+doc_markdown            = "allow"
+must_use_candidate      = "allow"
+return_self_not_must_use = "allow"
+needless_pass_by_value  = "allow"
+similar_names           = "allow"
+struct_excessive_bools  = "allow"
+unnecessary_wraps       = "allow"
+unused_async            = "allow"
+single_match_else       = "allow"
+items_after_statements  = "allow"
+# Cargo metadata noise — repository/homepage are at workspace level
+cargo_common_metadata   = "allow"
+# Doc-comment line-continuation cosmetics
+doc_lazy_continuation   = "allow"
 
 [profile.release]
 lto             = "thin"

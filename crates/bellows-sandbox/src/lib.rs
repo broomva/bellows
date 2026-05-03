@@ -22,7 +22,7 @@ pub struct VirtualSandbox;
 
 #[async_trait]
 impl Sandbox for VirtualSandbox {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "virtual"
     }
 
@@ -38,20 +38,30 @@ impl Sandbox for VirtualSandbox {
 
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         if let Some(parent) = std::path::Path::new(path).parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(BellowsError::from)?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(BellowsError::from)?;
         }
-        tokio::fs::write(path, bytes).await.map_err(BellowsError::from)
+        tokio::fs::write(path, bytes)
+            .await
+            .map_err(BellowsError::from)
     }
 
     async fn list(&self, path: &str) -> Result<Vec<DirEntry>> {
         let mut out = Vec::new();
-        let mut rd = tokio::fs::read_dir(path).await.map_err(BellowsError::from)?;
+        let mut rd = tokio::fs::read_dir(path)
+            .await
+            .map_err(BellowsError::from)?;
         while let Some(entry) = rd.next_entry().await.map_err(BellowsError::from)? {
             let meta = entry.metadata().await.map_err(BellowsError::from)?;
             out.push(DirEntry {
                 path: entry.path().to_string_lossy().into_owned(),
                 is_dir: meta.is_dir(),
-                size: if meta.is_dir() { None } else { Some(meta.len()) },
+                size: if meta.is_dir() {
+                    None
+                } else {
+                    Some(meta.len())
+                },
             });
         }
         Ok(out)

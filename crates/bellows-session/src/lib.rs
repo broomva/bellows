@@ -53,6 +53,7 @@ pub fn json_session_err(e: serde_json::Error) -> BellowsError {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use bellows_core::Message;
@@ -62,10 +63,10 @@ mod tests {
         let store = MemoryStore::new();
         let mut sess = Session::new();
         sess.push(Message::user("hello"));
-        store.save(&sess).await.expect("save");
-        let loaded = store.load(&sess.id).await.expect("load").expect("present");
+        store.save(&sess).await.unwrap();
+        let loaded = store.load(&sess.id).await.unwrap().unwrap();
         assert_eq!(loaded.history.len(), 1);
-        store.delete(&sess.id).await.expect("delete");
-        assert!(store.load(&sess.id).await.expect("load2").is_none());
+        store.delete(&sess.id).await.unwrap();
+        assert!(store.load(&sess.id).await.unwrap().is_none());
     }
 }

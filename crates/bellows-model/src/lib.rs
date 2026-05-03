@@ -1,59 +1,18 @@
 //! `bellows-model` — LLM provider connectors.
 //!
-//! v0.1 ships a minimal provider trait re-export and a no-op stub
-//! [`MockProvider`] used by tests and examples. Real Anthropic / OpenAI /
-//! OpenRouter implementations land in v0.2 once the streaming-event mapping
-//! is locked.
+//! Provider menu:
+//! - [`MockProvider`] — in-process echo, used in tests and examples without
+//!   network or API keys.
+//! - [`AnthropicProvider`] — calls Anthropic's Messages API. Supports both
+//!   `ANTHROPIC_API_KEY` (`x-api-key`) and the Claude Code OAuth token
+//!   (`Authorization: Bearer sk-ant-oat01-...`) authentication paths.
 //!
-//! The decision between hand-rolled per-provider connectors and the `genai`
-//! crate is tracked in `docs/DEPENDENCY-CHAIN.md` (RESEARCH FLAG, layer 10).
+//! Streaming is not yet wired — `stream` returns the same content as
+//! `complete` framed as a single `TextDelta` + `EndTurn`. Real streaming +
+//! tool-use deltas land in v0.2 (see `docs/ROADMAP.md`).
 
-use std::pin::Pin;
+pub mod anthropic;
+pub mod mock;
 
-use async_trait::async_trait;
-use bellows_core::{Message, ModelProvider, ModelRequest, ModelResponse, ModelStream, Result, StopReason};
-use futures::stream;
-
-/// A trivial in-process provider that echoes the last user message.
-///
-/// Used in tests and the `examples/issue-triage/` walkthrough so the example
-/// can run without network or API keys. Real provider connectors land in
-/// v0.2.
-#[derive(Debug, Clone, Default)]
-pub struct MockProvider;
-
-#[async_trait]
-impl ModelProvider for MockProvider {
-    fn id(&self) -> &str {
-        "mock"
-    }
-
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse> {
-        let last_user = request
-            .messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m.role, bellows_core::MsgRole::User))
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-        Ok(ModelResponse {
-            message: Message::assistant(format!("[mock echo] {last_user}")),
-            stop_reason: StopReason::EndTurn,
-            usage: None,
-        })
-    }
-
-    async fn stream(&self, request: ModelRequest) -> Result<ModelStream> {
-        let resp = self.complete(request).await?;
-        let event = bellows_core::model::ModelStreamEvent::TextDelta {
-            text: resp.message.content.clone(),
-        };
-        let end = bellows_core::model::ModelStreamEvent::EndTurn {
-            stop_reason: StopReason::EndTurn,
-            usage: None,
-        };
-        let s: ModelStream = Box::pin(stream::iter(vec![Ok(event), Ok(end)]))
-            as Pin<Box<dyn futures::Stream<Item = Result<bellows_core::model::ModelStreamEvent>> + Send>>;
-        Ok(s)
-    }
-}
+pub use anthropic::{AnthropicAuth, AnthropicProvider};
+pub use mock::MockProvider;

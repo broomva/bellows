@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 /// Where in the runtime hierarchy this `Role` was supplied.
 ///
 /// Lower-numbered scopes win during [`Role::merge`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RoleScope {
     /// Per-invocation override (highest precedence).
@@ -31,13 +31,8 @@ pub enum RoleScope {
     /// Per-session override (middle precedence).
     Session,
     /// Workflow default (lowest precedence).
+    #[default]
     Agent,
-}
-
-impl Default for RoleScope {
-    fn default() -> Self {
-        Self::Agent
-    }
 }
 
 /// A `Role` overlays identity and instruction text onto a [`ModelRequest`].
@@ -101,13 +96,17 @@ impl Role {
             instructions.extend(c.instructions.iter().cloned());
         }
 
+        let scope = if call.is_some() {
+            RoleScope::Call
+        } else if session.is_some() {
+            RoleScope::Session
+        } else {
+            RoleScope::Agent
+        };
         Self {
             identity,
             instructions,
-            scope: call.map_or(
-                session.map_or(RoleScope::Agent, |_| RoleScope::Session),
-                |_| RoleScope::Call,
-            ),
+            scope,
         }
     }
 
@@ -132,6 +131,7 @@ impl Role {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 

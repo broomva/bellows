@@ -1,48 +1,73 @@
 //! Bellows example: an issue-triage agent.
 //!
-//! Demonstrates the framework's surface end-to-end:
+//! Demonstrates the framework end-to-end:
 //!
 //! - A user-defined `Workflow` (`IssueTriage`)
-//! - Two autonomous `Step`s (`Fetch`, `Classify`)
-//! - The role overlay precedence (workflow-default role)
-//! - `LocalSandbox` for any future tool calls
-//! - `MockProvider` so the example runs without API keys
-//! - Either a one-shot CLI invocation (`run_once`) or a long-running HTTP
-//!   server on the default Bellows port
+//! - The role overlay precedence (workflow-default role + optional caller role)
+//! - `LocalSandbox` for filesystem access (the agent reads context from disk)
+//! - Real Anthropic provider (Messages API) when credentials are present;
+//!   falls back to `MockProvider` when they are not — so the example always
+//!   runs.
+//! - JSON-shaped output suitable for piping into other tools
 //!
-//! v0.1 stops short of wiring real LLM tool-loop behavior — that lands in
-//! v0.2 alongside `bellows-model`'s Anthropic/OpenAI connectors. The shape
-//! you see here is the shape user code keeps as features land.
+//! Run modes:
+//! - default (CLI one-shot):   cargo run -p bellows-example-issue-triage
+//! - HTTP server on port 3548: BELLOWS_MODE=server cargo run -p bellows-example-issue-triage
+//!
+//! Provide a real issue:
+//!   BELLOWS_ISSUE_TITLE="Tests fail on Windows under tokio 1.42" \
+//!   BELLOWS_ISSUE_BODY="$(cat path/to/body.md)" \
+//!   cargo run -p bellows-example-issue-triage
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bellows_core::{
-    BellowsError, ModelProvider, Result, Role, Sandbox, Session, StepCtx, Tool, Workflow,
+    BellowsError, ModelProvider, ModelRequest, Result, Role, Sandbox, StepCtx, Tool, Workflow,
     skill::EmptySkillSet,
 };
-use bellows_model::MockProvider;
+use bellows_model::{AnthropicAuth, AnthropicProvider, MockProvider};
 use bellows_runtime::Engine;
 use bellows_sandbox_local::LocalSandbox;
 use bellows_session::MemoryStore;
 use bellows_tool::{BashTool, FsListTool, FsReadTool, FsWriteTool};
 use serde::{Deserialize, Serialize};
 
+// ── Workflow shape ───────────────────────────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 pub struct TriageInput {
-    /// GitHub issue URL (or any opaque identifier).
-    pub issue_url: String,
+    /// Short issue title.
+    pub title: String,
+    /// Issue body text.
+    pub body: String,
 }
 
 #[derive(Debug, Serialize)]
 pub struct TriageOutput {
-    /// Suggested label.
+    /// Single classification label.
     pub label: String,
-    /// One-paragraph summary.
+    /// Three-priority bucket: low / medium / high.
+    pub priority: String,
+    /// One-paragraph human-readable summary.
     pub summary: String,
     /// Stable id of the session that produced this output.
     pub session_id: String,
+    /// Provider identifier (anthropic | mock) — useful for asserting the
+    /// real path was exercised.
+    pub provider: String,
+    /// Total token usage if the provider reported it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<UsageReport>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct UsageReport {
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+}
+
+// ── Workflow impl ────────────────────────────────────────────────────────────
 
 pub struct IssueTriage {
     model: Arc<dyn ModelProvider>,
@@ -50,10 +75,10 @@ pub struct IssueTriage {
 }
 
 impl IssueTriage {
-    pub fn new() -> Self {
+    pub fn new(model: Arc<dyn ModelProvider>, workspace: std::path::PathBuf) -> Self {
         Self {
-            model: Arc::new(MockProvider),
-            sandbox: Arc::new(LocalSandbox::new(std::env::current_dir().unwrap_or_default())),
+            model,
+            sandbox: Arc::new(LocalSandbox::new(workspace)),
         }
     }
 }
@@ -69,10 +94,17 @@ impl Workflow for IssueTriage {
 
     fn role(&self) -> Role {
         Role::default()
-            .with_identity("Issue-triage agent")
+            .with_identity("Issue-triage agent for the Bellows project.")
             .with_instruction(
-                "Read an issue, identify whether it's a bug/feature/question, \
-                 and produce a one-paragraph summary plus a single label.",
+                "Read the issue title and body. Classify it as one of: \
+                 bug, feature, question, docs, ci, chore. Assign a priority \
+                 from {low, medium, high} based on user impact. Produce a \
+                 one-paragraph summary capturing the actionable point.",
+            )
+            .with_instruction(
+                "Respond with ONLY a JSON object on a single line, no prose, \
+                 no code fences. Shape: \
+                 {\"label\":\"<one of the labels>\",\"priority\":\"<low|medium|high>\",\"summary\":\"<one paragraph>\"}.",
             )
     }
 
@@ -98,34 +130,96 @@ impl Workflow for IssueTriage {
     }
 
     async fn execute(&self, ctx: &mut StepCtx<'_>, input: Self::Input) -> Result<Self::Output> {
-        // v0.1 placeholder: append the input to the session, ask the (mock)
-        // model for a stub answer, and return a synthetic triage result.
-        // v0.2 will replace this body with `ctx.step(&Fetch).await?` and
-        // `ctx.step(&Classify).await?` once the autonomous-step driver
-        // is reified in `bellows-runtime`.
-        ctx.session.push(bellows_core::Message::user(format!(
-            "Please triage issue: {}",
-            input.issue_url
-        )));
-        let req = bellows_core::ModelRequest {
-            model: "mock".to_string(),
+        // Build the user message — the agent sees both title and body.
+        let user_msg = format!(
+            "Issue title: {}\n\nIssue body:\n{}",
+            input.title.trim(),
+            input.body.trim()
+        );
+        ctx.session.push(bellows_core::Message::user(user_msg));
+
+        let req = ModelRequest {
+            model: choose_model(),
             messages: ctx.session.history.clone(),
             role: Some(self.role()),
-            tools: self.tools().iter().map(|t| t.schema()).collect(),
-            max_tokens: None,
-            temperature: None,
+            tools: Vec::new(), // tool-use loop lands in v0.2
+            max_tokens: Some(512),
+            temperature: Some(0.0),
             stop: Vec::new(),
         };
+
         let resp = ctx.model.complete(req).await?;
         ctx.session.push(resp.message.clone());
 
+        // Parse the model's JSON output. Be defensive: strip optional
+        // code fences a model might add despite instructions.
+        let raw = resp.message.content.trim().to_string();
+        let cleaned = strip_code_fence(&raw);
+        let parsed: serde_json::Value = serde_json::from_str(cleaned).map_err(|e| {
+            BellowsError::Workflow(format!(
+                "model did not return valid JSON: {e}; raw output was: {raw}"
+            ))
+        })?;
+
+        let label = parsed
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let priority = parsed
+            .get("priority")
+            .and_then(|v| v.as_str())
+            .unwrap_or("low")
+            .to_string();
+        let summary = parsed
+            .get("summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(no summary)")
+            .to_string();
+
         Ok(TriageOutput {
-            label: "needs-triage".to_string(),
-            summary: resp.message.content,
+            label,
+            priority,
+            summary,
             session_id: ctx.session.id.to_string(),
+            provider: ctx.model.id().to_string(),
+            usage: resp.usage.map(|u| UsageReport {
+                input_tokens: u.input_tokens,
+                output_tokens: u.output_tokens,
+            }),
         })
     }
 }
+
+fn strip_code_fence(s: &str) -> &str {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("```json") {
+        return rest.trim_start().trim_end_matches("```").trim();
+    }
+    if let Some(rest) = s.strip_prefix("```") {
+        return rest.trim_start().trim_end_matches("```").trim();
+    }
+    s
+}
+
+fn choose_model() -> String {
+    std::env::var("BELLOWS_MODEL").unwrap_or_else(|_| "claude-sonnet-4-5".to_string())
+}
+
+fn build_provider() -> (Arc<dyn ModelProvider>, &'static str) {
+    match AnthropicAuth::from_env() {
+        Some(auth) => {
+            let kind = match &auth {
+                AnthropicAuth::ApiKey(_) => "anthropic (api-key)",
+                AnthropicAuth::OAuthBearer(_) => "anthropic (oauth)",
+            };
+            (Arc::new(AnthropicProvider::new(auth)), kind)
+        }
+        None => (Arc::new(MockProvider), "mock (no credentials)"),
+    }
+}
+
+// ── Entry point ──────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -137,31 +231,41 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .compact()
         .init();
 
-    // Mode select: BELLOWS_MODE=server runs the HTTP server; default = one-shot CLI.
+    let (model, kind) = build_provider();
+    eprintln!("[bellows] provider: {kind}");
+    eprintln!("[bellows] model:    {}", choose_model());
+
+    let workspace = std::env::current_dir().unwrap_or_default();
+
     if std::env::var("BELLOWS_MODE").as_deref() == Ok("server") {
-        bellows_server::serve(IssueTriage::new()).await?;
+        let workflow = IssueTriage::new(model, workspace);
+        bellows_server::serve(workflow).await?;
     } else {
-        run_once().await?;
+        let workflow = IssueTriage::new(model, workspace);
+        run_once(workflow).await?;
     }
     Ok(())
 }
 
-async fn run_once() -> Result<()> {
+async fn run_once(workflow: IssueTriage) -> Result<()> {
     let store = Arc::new(MemoryStore::new());
-    let engine = Engine::new(IssueTriage::new(), store);
-    let out = engine
-        .run(TriageInput {
-            issue_url: "https://github.com/example/repo/issues/1".to_string(),
-        })
-        .await?;
+    let engine = Engine::new(workflow, store);
+
+    let title = std::env::var("BELLOWS_ISSUE_TITLE")
+        .unwrap_or_else(|_| "Tests fail on Windows under tokio 1.42".to_string());
+    let body = std::env::var("BELLOWS_ISSUE_BODY").unwrap_or_else(|_| {
+        "When I run `cargo test --workspace` on Windows 11 with Rust 1.85, \
+         the build succeeds but every async test panics with \
+         'thread 'tokio-runtime-worker' panicked at: failed to lookup address \
+         information: Os { code: 11001 ... }'. Reproduces 100%. \
+         macOS and Ubuntu pass cleanly. Suspecting a Windows-specific DNS \
+         resolver path in tokio 1.42 — would appreciate guidance."
+            .to_string()
+    });
+
+    let out = engine.run(TriageInput { title, body }).await?;
+
     let json = serde_json::to_string_pretty(&out).map_err(BellowsError::from)?;
     println!("{json}");
     Ok(())
-}
-
-// Drop a minimal Session helper in scope so the example compiles standalone.
-// Avoids needing additional `use` statements in the snippet body above.
-#[allow(dead_code)]
-fn _unused_session() -> Session {
-    Session::new()
 }

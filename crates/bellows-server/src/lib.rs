@@ -12,7 +12,11 @@
 
 use std::{net::SocketAddr, sync::Arc};
 
-use axum::{Json, Router, extract::State, routing::{get, post}};
+use axum::{
+    Json, Router,
+    extract::State,
+    routing::{get, post},
+};
 use bellows_core::Workflow;
 use bellows_runtime::Engine;
 use bellows_session::MemoryStore;
@@ -62,7 +66,9 @@ impl<W: Workflow + 'static> Server<W> {
 
         let listener = tokio::net::TcpListener::bind(self.addr).await?;
         tracing::info!(addr = %self.addr, "bellows server listening");
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await
     }
 }
 

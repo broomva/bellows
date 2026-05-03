@@ -15,7 +15,8 @@
 use std::sync::Arc;
 
 use bellows_core::{
-    ModelProvider, Result, Sandbox, Session, SessionStore, SkillSet, StepCtx, ToolRegistry, Workflow,
+    ModelProvider, Result, Sandbox, Session, SessionStore, SkillSet, StepCtx, ToolRegistry,
+    Workflow,
 };
 use bellows_tool::SimpleRegistry;
 use tracing::{Span, info_span};
