@@ -24,12 +24,17 @@
 //! cargo run --release -p bellows-example-repo-scout
 //! ```
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use async_trait::async_trait;
 use bellows_core::{
-    BellowsError, InferenceRequest, Message, ModelProvider, Result, Role, Sandbox, Step, StepCtx,
-    Tool, Workflow, skill::EmptySkillSet,
+    AllowDenyHook, BellowsError, Hook, HookCtx, HookOutcome, InferenceHookOutcome,
+    InferenceRequest, Message, ModelProvider, ModelRequest, ModelResponse, Result, Role, Sandbox,
+    Step, StepCtx, Tool, ToolCall, ToolHookOutcome, ToolResult, TracingHook, Workflow,
+    skill::EmptySkillSet,
 };
 use bellows_model::{AnthropicAuth, AnthropicProvider, MockProvider};
 use bellows_runtime::Engine;
@@ -61,6 +66,133 @@ pub struct ScoutOutput {
     pub session_id: String,
     /// Provider id (`anthropic` | `mock`).
     pub provider: String,
+    /// Hook event counters captured during the run.
+    pub hook_events: HookEvents,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct HookEvents {
+    pub workflow_starts: u64,
+    pub workflow_ends: u64,
+    pub step_starts: u64,
+    pub pre_inference: u64,
+    pub post_inference: u64,
+    pub pre_tool_use: u64,
+    pub post_tool_use: u64,
+    /// Tool calls that the path-policy hook denied.
+    pub denied_paths: Vec<String>,
+}
+
+// ── Custom hooks for the demo ────────────────────────────────────────────────
+
+/// Counts every lifecycle event the runtime fires. Cheap, lock-free.
+#[derive(Debug, Default)]
+pub struct CountingHook {
+    workflow_starts: AtomicU64,
+    workflow_ends: AtomicU64,
+    step_starts: AtomicU64,
+    pre_inference: AtomicU64,
+    post_inference: AtomicU64,
+    pre_tool_use: AtomicU64,
+    post_tool_use: AtomicU64,
+}
+
+#[async_trait]
+impl Hook for CountingHook {
+    fn name(&self) -> &str {
+        "counting"
+    }
+
+    async fn on_workflow_start(&self, _: &HookCtx<'_>) -> Result<HookOutcome> {
+        self.workflow_starts.fetch_add(1, Ordering::Relaxed);
+        Ok(HookOutcome::Continue)
+    }
+    async fn on_workflow_end(&self, _: &HookCtx<'_>, _: bool) -> Result<HookOutcome> {
+        self.workflow_ends.fetch_add(1, Ordering::Relaxed);
+        Ok(HookOutcome::Continue)
+    }
+    async fn on_step_start(&self, _: &HookCtx<'_>, _: &str) -> Result<HookOutcome> {
+        self.step_starts.fetch_add(1, Ordering::Relaxed);
+        Ok(HookOutcome::Continue)
+    }
+    async fn on_pre_inference(
+        &self,
+        _: &HookCtx<'_>,
+        _: &mut ModelRequest,
+    ) -> Result<InferenceHookOutcome> {
+        self.pre_inference.fetch_add(1, Ordering::Relaxed);
+        Ok(InferenceHookOutcome::Continue)
+    }
+    async fn on_post_inference(&self, _: &HookCtx<'_>, _: &ModelResponse) -> Result<HookOutcome> {
+        self.post_inference.fetch_add(1, Ordering::Relaxed);
+        Ok(HookOutcome::Continue)
+    }
+    async fn on_pre_tool_use(&self, _: &HookCtx<'_>, _: &mut ToolCall) -> Result<ToolHookOutcome> {
+        self.pre_tool_use.fetch_add(1, Ordering::Relaxed);
+        Ok(ToolHookOutcome::Continue)
+    }
+    async fn on_post_tool_use(
+        &self,
+        _: &HookCtx<'_>,
+        _: &ToolCall,
+        _: &mut ToolResult,
+    ) -> Result<HookOutcome> {
+        self.post_tool_use.fetch_add(1, Ordering::Relaxed);
+        Ok(HookOutcome::Continue)
+    }
+}
+
+/// Pre-tool-use hook that denies `fs_read` for paths matching any of a
+/// list of substrings. Demonstrates a path-policy guardrail similar to
+/// what production systems wire as Claude Code's `PreToolUse` hook.
+#[derive(Debug)]
+pub struct PathPolicyHook {
+    deny_patterns: Vec<String>,
+    denied: tokio::sync::Mutex<Vec<String>>,
+}
+
+impl PathPolicyHook {
+    fn new(patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            deny_patterns: patterns.into_iter().map(Into::into).collect(),
+            denied: tokio::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn snapshot_denied(&self) -> Vec<String> {
+        self.denied.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl Hook for PathPolicyHook {
+    fn name(&self) -> &str {
+        "path-policy"
+    }
+
+    async fn on_pre_tool_use(
+        &self,
+        _ctx: &HookCtx<'_>,
+        call: &mut ToolCall,
+    ) -> Result<ToolHookOutcome> {
+        if call.name != "fs_read" {
+            return Ok(ToolHookOutcome::Continue);
+        }
+        let path = call
+            .arguments
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        for pat in &self.deny_patterns {
+            if path.contains(pat) {
+                self.denied.lock().await.push(path.to_string());
+                return Ok(ToolHookOutcome::Deny(format!(
+                    "path-policy refused: `{path}` matches deny-pattern `{pat}`"
+                )));
+            }
+        }
+        Ok(ToolHookOutcome::Continue)
+    }
 }
 
 // ── Step (the autonomous boundary) ───────────────────────────────────────────
@@ -68,6 +200,8 @@ pub struct ScoutOutput {
 pub struct ScoutStep {
     role: Role,
     model: String,
+    counter: Arc<CountingHook>,
+    path_policy: Arc<PathPolicyHook>,
 }
 
 #[async_trait]
@@ -142,12 +276,25 @@ impl Step for ScoutStep {
             .unwrap_or("(no answer)")
             .to_string();
 
+        // Snapshot hook counters for the output.
+        let hook_events = HookEvents {
+            workflow_starts: self.counter.workflow_starts.load(Ordering::Relaxed),
+            workflow_ends: self.counter.workflow_ends.load(Ordering::Relaxed),
+            step_starts: self.counter.step_starts.load(Ordering::Relaxed),
+            pre_inference: self.counter.pre_inference.load(Ordering::Relaxed),
+            post_inference: self.counter.post_inference.load(Ordering::Relaxed),
+            pre_tool_use: self.counter.pre_tool_use.load(Ordering::Relaxed),
+            post_tool_use: self.counter.post_tool_use.load(Ordering::Relaxed),
+            denied_paths: self.path_policy.snapshot_denied().await,
+        };
+
         Ok(ScoutOutput {
             answer,
             files_read,
             turns,
             session_id: ctx.session.id.to_string(),
             provider: ctx.model.id().to_string(),
+            hook_events,
         })
     }
 }
@@ -158,6 +305,8 @@ pub struct RepoScout {
     model: Arc<dyn ModelProvider>,
     sandbox: Arc<dyn Sandbox>,
     model_id: String,
+    counter: Arc<CountingHook>,
+    path_policy: Arc<PathPolicyHook>,
 }
 
 impl RepoScout {
@@ -165,11 +314,15 @@ impl RepoScout {
         model: Arc<dyn ModelProvider>,
         workspace: std::path::PathBuf,
         model_id: String,
+        counter: Arc<CountingHook>,
+        path_policy: Arc<PathPolicyHook>,
     ) -> Self {
         Self {
             model,
             sandbox: Arc::new(LocalSandbox::new(workspace)),
             model_id,
+            counter,
+            path_policy,
         }
     }
 }
@@ -216,6 +369,8 @@ impl Workflow for RepoScout {
         let step = ScoutStep {
             role: self.role(),
             model: self.model_id.clone(),
+            counter: self.counter.clone(),
+            path_policy: self.path_policy.clone(),
         };
         ctx.step(&step, input).await
     }
@@ -299,9 +454,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let workspace = std::env::current_dir().unwrap_or_default();
 
-    let workflow = RepoScout::new(model, workspace.clone(), model_id);
+    // Build hooks. Counter for stats, path-policy for security guardrail,
+    // AllowDenyHook to prove the API works (denies fs_write — Claude
+    // never has it in this example, but the registration is real),
+    // TracingHook for lifecycle observability.
+    let counter = Arc::new(CountingHook::default());
+    let path_policy = Arc::new(PathPolicyHook::new([
+        ".env",
+        "id_rsa",
+        "credentials",
+        "secrets",
+    ]));
+
+    let workflow = RepoScout::new(
+        model,
+        workspace.clone(),
+        model_id,
+        counter.clone(),
+        path_policy.clone(),
+    );
     let store = Arc::new(MemoryStore::new());
-    let engine = Engine::new(workflow, store);
+    let engine = Engine::new(workflow, store)
+        .with_hook(Arc::new(TracingHook))
+        .with_hook(counter.clone())
+        .with_hook(path_policy.clone())
+        .with_hook(Arc::new(AllowDenyHook::deny_list(["fs_write"])));
 
     let start_path = std::env::var("BELLOWS_START_PATH").unwrap_or_else(|_| ".".to_string());
     let question = std::env::var("BELLOWS_QUESTION").unwrap_or_else(|_| {

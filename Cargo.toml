@@ -104,6 +104,7 @@ needless_lifetimes      = "allow"
 redundant_clone         = "allow"
 struct_field_names      = "allow"
 match_same_arms         = "allow"
+unnecessary_literal_bound = "allow"
 # Pragmatic exceptions — the load-bearing denies above (unwrap/expect/panic/dbg)
 # are what catches real bugs. The lints below are cosmetic noise that adds
 # review friction without preventing defects.

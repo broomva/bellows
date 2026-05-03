@@ -165,7 +165,7 @@ broader Broomva ecosystem.
 the binary with `--once --input <json>`, prints output to stdout, and
 exits. CI-friendly.
 
-## 6. Observability
+## 6. Observability and lifecycle hooks
 
 Every `Step::run` and `Tool::invoke` opens a `tracing::Span`. Spans
 carry: workflow name, session id, step name, tool name, model id. The
@@ -176,6 +176,39 @@ The session itself is the audit log: every model turn and every tool
 result lands in `Session.history`. `SessionStore` implementations are
 free to also stream to external systems (e.g. Lago, S3, Postgres) —
 that's a non-contract concern.
+
+For observation **and** actuation, the framework exposes a `Hook`
+trait — the Bellows analogue of Claude Code's `.claude/settings.json`
+event pipeline. In-process Rust callbacks; trait methods default to
+`Continue` so impls only override the events they care about.
+
+| Event | Outcome | Typical use |
+|---|---|---|
+| `on_workflow_start` | `HookOutcome` | open audit span, record run id |
+| `on_workflow_end` | `HookOutcome` | persist final stats, close audit |
+| `on_step_start` | `HookOutcome` | step-level metrics |
+| `on_step_end` | `HookOutcome` | step-level metrics |
+| `on_pre_inference` | `InferenceHookOutcome` | enforce token budget; **stub** synthetic message for replay tests |
+| `on_post_inference` | `HookOutcome` | content filter on assistant output |
+| `on_pre_tool_use` | `ToolHookOutcome` | approval gate; **stub** synthetic tool result; **deny** with reason |
+| `on_post_tool_use` | `HookOutcome` | redact secrets in tool output; convert success to error |
+
+Stub outcomes (`InferenceHookOutcome::Stub`, `ToolHookOutcome::Stub`)
+are how cache layers, replay harnesses, and approval-then-replace
+flows are built without forking the runtime.
+
+Hooks register on the `Engine` builder:
+
+```rust
+let engine = Engine::new(workflow, store)
+    .with_hook(Arc::new(TracingHook))
+    .with_hook(Arc::new(MyApprovalHook::from_policy_file("policy.toml")?))
+    .with_hook(Arc::new(BudgetHook::with_cap(50_000)));
+```
+
+`bellows-core` ships two reference impls (`TracingHook`,
+`AllowDenyHook`); fancier hooks with file I/O, MCP callbacks, or
+external-process shell-out belong to a future `bellows-hooks` crate.
 
 ## 7. What we explicitly do not do (in v0.1)
 

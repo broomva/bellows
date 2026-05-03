@@ -17,7 +17,7 @@ use axum::{
     extract::State,
     routing::{get, post},
 };
-use bellows_core::Workflow;
+use bellows_core::{Hook, Workflow};
 use bellows_runtime::Engine;
 use bellows_session::MemoryStore;
 use serde_json::json;
@@ -34,7 +34,7 @@ pub async fn serve<W: Workflow + 'static>(workflow: W) -> std::io::Result<()> {
 
 /// Configurable server wrapping one workflow.
 pub struct Server<W: Workflow> {
-    engine: Arc<Engine<W>>,
+    engine: Engine<W>,
     addr: SocketAddr,
 }
 
@@ -45,7 +45,7 @@ impl<W: Workflow + 'static> Server<W> {
     pub fn new(workflow: W) -> Self {
         let store = Arc::new(MemoryStore::new());
         Self {
-            engine: Arc::new(Engine::new(workflow, store)),
+            engine: Engine::new(workflow, store),
             addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
         }
     }
@@ -57,12 +57,22 @@ impl<W: Workflow + 'static> Server<W> {
         self
     }
 
+    /// Register a lifecycle hook on the underlying engine. Hooks fire
+    /// in registration order at every event (workflow start/end, step
+    /// start/end, pre/post inference, pre/post tool use).
+    #[must_use]
+    pub fn with_hook(mut self, hook: Arc<dyn Hook>) -> Self {
+        self.engine = self.engine.with_hook(hook);
+        self
+    }
+
     /// Run the server until shutdown signal.
     pub async fn run(self) -> std::io::Result<()> {
+        let engine = Arc::new(self.engine);
         let app = Router::new()
             .route("/healthz", get(healthz))
             .route("/v1/agents/:name", post(invoke::<W>))
-            .with_state(self.engine.clone());
+            .with_state(engine);
 
         let listener = tokio::net::TcpListener::bind(self.addr).await?;
         tracing::info!(addr = %self.addr, "bellows server listening");

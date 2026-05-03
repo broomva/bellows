@@ -27,6 +27,7 @@
 #![allow(clippy::module_inception)]
 
 pub mod error;
+pub mod hook;
 pub mod message;
 pub mod model;
 pub mod role;
@@ -38,6 +39,10 @@ pub mod tool;
 pub mod workflow;
 
 pub use error::{BellowsError, Result};
+pub use hook::{
+    AllowDenyHook, Hook, HookCtx, HookOutcome, HookRegistry, InferenceHookOutcome, ToolHookOutcome,
+    TracingHook,
+};
 pub use message::{Message, MsgRole, ToolCall, ToolResult};
 pub use model::{ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelUsage, StopReason};
 pub use role::{Role, RoleScope};

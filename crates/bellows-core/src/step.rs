@@ -25,8 +25,9 @@ use async_trait::async_trait;
 use tracing::Instrument;
 
 use crate::{
-    BellowsError, Message, ModelProvider, ModelRequest, MsgRole, Result, Role, Sandbox, Session,
-    SkillSet, StopReason, Tool, ToolRegistry, ToolResult, ToolSchema,
+    BellowsError, HookCtx, HookOutcome, HookRegistry, InferenceHookOutcome, Message, ModelProvider,
+    ModelRequest, MsgRole, Result, Role, Sandbox, Session, SkillSet, StopReason, Tool,
+    ToolHookOutcome, ToolRegistry, ToolResult, ToolSchema,
 };
 
 /// Soft cap on autonomous-loop iterations to prevent runaway agents.
@@ -69,6 +70,12 @@ pub struct StepCtx<'a> {
     pub sandbox: Arc<dyn Sandbox>,
     /// Skills declared by the workflow.
     pub skills: &'a dyn SkillSet,
+    /// Lifecycle hooks fired by the autonomous loop and by
+    /// [`StepCtx::step`]. Walked in registration order at every event.
+    pub hooks: Arc<HookRegistry>,
+    /// Workflow name carried for hook context. Filled by the runtime
+    /// when constructing the `StepCtx`.
+    pub workflow_name: &'a str,
     /// Tracing span the runtime opened around this step. Children should be
     /// created via `tracing::info_span!(parent: &ctx.trace, ...)`.
     pub trace: tracing::Span,
@@ -148,17 +155,65 @@ impl InferenceRequest {
 }
 
 impl StepCtx<'_> {
+    /// Build a fresh `HookCtx` borrowing this step's session + workflow
+    /// name + tracing span.
+    const fn hook_ctx(&self) -> HookCtx<'_> {
+        HookCtx {
+            workflow_name: self.workflow_name,
+            session: self.session,
+            trace: &self.trace,
+        }
+    }
+
     /// Scope a child [`Step`] under its own tracing span and delegate to
-    /// `s.run(self, input)`.
+    /// `s.run(self, input)`. Fires `on_step_start` and `on_step_end`
+    /// hooks around the call.
     ///
     /// This is the canonical way for a [`Workflow::execute`] body to
     /// orchestrate inner steps. Each call gets its own `step` span so
     /// observability tools can show the workflow's structure.
     pub async fn step<S: Step + ?Sized>(&mut self, s: &S, input: S::Input) -> Result<S::Output> {
         let span = tracing::info_span!(parent: &self.trace, "step", name = s.name());
-        async move { s.run(self, input).await }
-            .instrument(span)
-            .await
+
+        // Pre-step hooks
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.hook_ctx();
+            for hook in self.hooks.list() {
+                if let HookOutcome::Deny(reason) = hook.on_step_start(&hook_ctx, s.name()).await? {
+                    return Err(BellowsError::Workflow(format!(
+                        "hook `{}` denied step `{}`: {reason}",
+                        hook.name(),
+                        s.name(),
+                    )));
+                }
+            }
+        }
+
+        let result = async { s.run(self, input).await }.instrument(span).await;
+        let succeeded = result.is_ok();
+
+        // Post-step hooks (best-effort: a hook error here is logged but
+        // does not override the step's own result)
+        if !self.hooks.is_empty() {
+            let hook_ctx = self.hook_ctx();
+            for hook in self.hooks.list() {
+                match hook.on_step_end(&hook_ctx, s.name(), succeeded).await {
+                    Ok(HookOutcome::Continue) => {}
+                    Ok(HookOutcome::Deny(reason)) => {
+                        tracing::warn!(
+                            hook = hook.name(),
+                            step = s.name(),
+                            "post-step deny ignored: {reason}"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(hook = hook.name(), step = s.name(), error = %err, "post-step hook error ignored");
+                    }
+                }
+            }
+        }
+
+        result
     }
 
     /// Drive the autonomous loop: model call → tool dispatch → repeat
@@ -187,7 +242,7 @@ impl StepCtx<'_> {
         let tool_schemas: Vec<ToolSchema> = self.tools.list().iter().map(|t| t.schema()).collect();
 
         for turn in 0..req.max_turns {
-            let model_request = ModelRequest {
+            let mut model_request = ModelRequest {
                 model: req.model.clone(),
                 messages: self.session.history.clone(),
                 role: req.role.clone(),
@@ -196,6 +251,31 @@ impl StepCtx<'_> {
                 temperature: req.temperature,
                 stop: req.stop.clone(),
             };
+
+            // Pre-inference hooks: may mutate request, deny, or stub.
+            if !self.hooks.is_empty() {
+                let hook_ctx = self.hook_ctx();
+                let mut stub: Option<Message> = None;
+                for hook in self.hooks.list() {
+                    match hook.on_pre_inference(&hook_ctx, &mut model_request).await? {
+                        InferenceHookOutcome::Continue => {}
+                        InferenceHookOutcome::Deny(reason) => {
+                            return Err(BellowsError::Workflow(format!(
+                                "hook `{}` denied inference: {reason}",
+                                hook.name()
+                            )));
+                        }
+                        InferenceHookOutcome::Stub(msg) => {
+                            stub = Some(msg);
+                            break;
+                        }
+                    }
+                }
+                if let Some(msg) = stub {
+                    self.session.push(msg.clone());
+                    return Ok(msg);
+                }
+            }
 
             let span = tracing::info_span!(
                 parent: &self.trace,
@@ -206,6 +286,21 @@ impl StepCtx<'_> {
             let resp = async { self.model.complete(model_request).await }
                 .instrument(span)
                 .await?;
+
+            // Post-inference hooks (observation/veto, no mutation).
+            if !self.hooks.is_empty() {
+                let hook_ctx = self.hook_ctx();
+                for hook in self.hooks.list() {
+                    if let HookOutcome::Deny(reason) =
+                        hook.on_post_inference(&hook_ctx, &resp).await?
+                    {
+                        return Err(BellowsError::Workflow(format!(
+                            "hook `{}` denied response: {reason}",
+                            hook.name()
+                        )));
+                    }
+                }
+            }
 
             // Always persist the assistant message — including ones with
             // tool_calls — before dispatching, so the session history is
@@ -243,51 +338,101 @@ impl StepCtx<'_> {
         )))
     }
 
-    /// Dispatch a batch of tool calls against the active sandbox.
+    /// Dispatch a batch of tool calls against the active sandbox, with
+    /// hooks fired pre- and post- each call.
     ///
-    /// Tool calls are dispatched **sequentially** in v0.1. Parallel
-    /// dispatch via `FuturesOrdered` lands in v0.4 (see
-    /// `docs/ROADMAP.md`).
+    /// Each call passes through `on_pre_tool_use` (which may mutate
+    /// arguments, deny the call, or stub a synthetic result) and
+    /// `on_post_tool_use` (which may mutate the result or convert it to
+    /// an error). Calls are dispatched **sequentially** in v0.1;
+    /// parallel dispatch via `FuturesOrdered` lands in v0.4.
     async fn dispatch_tool_calls(&self, calls: &[crate::ToolCall]) -> Result<Vec<ToolResult>> {
         let mut out = Vec::with_capacity(calls.len());
         for call in calls {
-            let span = tracing::info_span!(
-                parent: &self.trace,
-                "tool.invoke",
-                name = %call.name,
-                id = %call.id,
-            );
-            let tool: Arc<dyn Tool> =
-                self.tools
-                    .get(&call.name)
-                    .ok_or_else(|| BellowsError::Tool {
-                        name: call.name.clone(),
-                        reason: "tool not registered".to_string(),
-                    })?;
-            let result = async {
-                tool.invoke(call.arguments.clone(), self.sandbox.as_ref())
-                    .await
-            }
-            .instrument(span)
-            .await;
+            let mut call = call.clone();
 
-            match result {
-                Ok(value) => out.push(ToolResult {
+            // Pre-tool-use hooks
+            let mut hook_outcome: ToolHookOutcome = ToolHookOutcome::Continue;
+            if !self.hooks.is_empty() {
+                let hook_ctx = self.hook_ctx();
+                for hook in self.hooks.list() {
+                    match hook.on_pre_tool_use(&hook_ctx, &mut call).await? {
+                        ToolHookOutcome::Continue => {}
+                        denied @ ToolHookOutcome::Deny(_) => {
+                            hook_outcome = denied;
+                            break;
+                        }
+                        stubbed @ ToolHookOutcome::Stub(_) => {
+                            hook_outcome = stubbed;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let mut result = match hook_outcome {
+                ToolHookOutcome::Deny(reason) => ToolResult {
+                    call_id: call.id.clone(),
+                    output: serde_json::json!({ "error": reason, "denied_by": "hook" }),
+                    is_error: true,
+                },
+                ToolHookOutcome::Stub(value) => ToolResult {
                     call_id: call.id.clone(),
                     output: value,
                     is_error: false,
-                }),
-                Err(err) => {
-                    // Surface the error to the model as a tool_result with
-                    // is_error: true. The model gets to react instead of
-                    // the workflow blowing up.
-                    out.push(ToolResult {
-                        call_id: call.id.clone(),
-                        output: serde_json::json!({ "error": err.to_string() }),
-                        is_error: true,
-                    });
+                },
+                ToolHookOutcome::Continue => {
+                    let span = tracing::info_span!(
+                        parent: &self.trace,
+                        "tool.invoke",
+                        name = %call.name,
+                        id = %call.id,
+                    );
+                    let tool: Arc<dyn Tool> =
+                        self.tools
+                            .get(&call.name)
+                            .ok_or_else(|| BellowsError::Tool {
+                                name: call.name.clone(),
+                                reason: "tool not registered".to_string(),
+                            })?;
+                    let invocation = async {
+                        tool.invoke(call.arguments.clone(), self.sandbox.as_ref())
+                            .await
+                    }
+                    .instrument(span)
+                    .await;
+
+                    match invocation {
+                        Ok(value) => ToolResult {
+                            call_id: call.id.clone(),
+                            output: value,
+                            is_error: false,
+                        },
+                        Err(err) => ToolResult {
+                            call_id: call.id.clone(),
+                            output: serde_json::json!({ "error": err.to_string() }),
+                            is_error: true,
+                        },
+                    }
+                }
+            };
+
+            // Post-tool-use hooks
+            if !self.hooks.is_empty() {
+                let hook_ctx = self.hook_ctx();
+                for hook in self.hooks.list() {
+                    match hook.on_post_tool_use(&hook_ctx, &call, &mut result).await? {
+                        HookOutcome::Continue => {}
+                        HookOutcome::Deny(reason) => {
+                            result.output =
+                                serde_json::json!({ "error": reason, "denied_by": "hook" });
+                            result.is_error = true;
+                        }
+                    }
                 }
             }
+
+            out.push(result);
         }
         Ok(out)
     }

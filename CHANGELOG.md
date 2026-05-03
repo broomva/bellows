@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — lifecycle hooks (v0.2-pre)
+
+The Bellows analogue of Claude Code's `.claude/settings.json` event
+pipeline (`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`,
+`Notification`). In-process Rust trait callbacks rather than shell-out
+hooks — fast, type-safe, share the agent's trust posture.
+
+- **`bellows_core::Hook`** trait with eight lifecycle methods, all
+  defaulting to `Continue`:
+  `on_workflow_start`, `on_workflow_end`,
+  `on_step_start`, `on_step_end`,
+  `on_pre_inference`, `on_post_inference`,
+  `on_pre_tool_use`, `on_post_tool_use`.
+- **Outcome enums** typed per-event:
+  `HookOutcome` (continue / deny),
+  `ToolHookOutcome` (continue / deny / **stub** synthetic result),
+  `InferenceHookOutcome` (continue / deny / **stub** synthetic message).
+- **`HookRegistry`** — ordered collection walked in registration order.
+- **Reference impls in core** (no I/O, just `tracing`):
+  - `TracingHook` — emits a `tracing::info!` at every event.
+  - `AllowDenyHook` — pattern-match allow/deny by tool name.
+- **`Engine::with_hook` / `Engine::with_hooks`** builders.
+- **`Server::with_hook`** delegates to the underlying engine.
+- **`StepCtx` carries `hooks: Arc<HookRegistry>` + `workflow_name`**
+  so the autonomous loop can fire pre/post hooks at the four points
+  inside `run_inference` and `step`.
+- Tool-use and inference hooks may **mutate** the request/call before
+  it executes; post-hooks may mutate the result (e.g. redact).
+- Tool-use hooks may **stub** a synthetic result instead of running
+  the tool — useful for caching, mocking in tests, and approval-then-
+  replace flows.
+- Hook errors during pre-events propagate; errors during post-events
+  are logged but do not override the underlying action's result
+  (best-effort observation).
+- Four new unit tests in `bellows-core::hook::tests` for allow/deny
+  semantics and registration order — workspace test count 6 → 10.
+
+### Validated end-to-end with real Claude (hooks)
+
+- **Observation scenario:** TracingHook + CountingHook registered;
+  every lifecycle event emitted to stderr and counted. `repo-scout`
+  reports `pre_inference: 3, post_inference: 3, pre_tool_use: 4,
+  post_tool_use: 4` for a 3-turn / 4-tool-call run — exact match
+  with the runtime trace.
+- **Deny scenario:** `PathPolicyHook` registered with deny-patterns
+  `[".env", "id_rsa", "credentials", "secrets"]`. Asked Claude to
+  read both `README.md` (allowed) and `.env` (denied). Hook
+  intercepted on `on_pre_tool_use`, runtime synthesized
+  `tool_result { is_error: true, denied_by: "hook" }`. Claude read
+  the deny reason in the next turn and adapted: final answer
+  explained the README contents AND that "*the .env file could not
+  be read because it matches a deny-pattern in the path policy*".
+  `hook_events.denied_paths: [".env"]` captured the audit trail.
+
 ### Added — autonomous tool-use loop (v0.2-pre)
 
 - **`StepCtx::step()`** — scopes a child [`Step`] under its own tracing
