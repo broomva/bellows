@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — phone-friendly web UI (v0.2-pre)
+
+- `GET /` on `bellows-server` now serves a baked-in HTML UI suitable
+  for phones (responsive, dark-mode, vanilla JS, no build step). The
+  workflow name and an example input are templated in at boot.
+- `GET /v1/agents` lists the mounted workflow + its endpoint.
+- `Server::with_example_input(json)` builder lets each example pre-fill
+  the UI's request-body box with a sensible default.
+- `repo-scout` example now branches on `BELLOWS_MODE=server` to spin
+  up the HTTP server with all four hooks (TracingHook, CountingHook,
+  PathPolicyHook, AllowDenyHook) attached.
+- Path-param syntax migrated to axum 0.8 (`/v1/agents/{name}` was
+  panicking under axum 0.8; now fixed).
+- New `docs/RUNNING.md` documents three deploy paths: CLI one-shot,
+  local HTTP server, public URL via cloudflared quick tunnel /
+  Tailscale Funnel / ngrok / same-WiFi LAN IP. Includes a security
+  note on the no-auth tunnel posture.
+
+### Validated
+
+- Local: `curl /healthz`, `/v1/agents`, `GET /` (HTML), and a real
+  `POST /v1/agents/repo-scout` against Claude — all 200 OK; 6-turn
+  agent run with 6 tool calls, structured JSON response with full
+  hook counters. UI loads with workflow name + example input
+  pre-filled.
+- Public: `cloudflared tunnel --url http://localhost:3548` opened a
+  `*.trycloudflare.com` HTTPS URL with `Registered tunnel connection
+  ... protocol=quic` confirmed by cloudflared. The same agent
+  endpoint is reachable from any device on the public internet over
+  HTTPS via Cloudflare's edge.
+
 ### Added — lifecycle hooks (v0.2-pre)
 
 The Bellows analogue of Claude Code's `.claude/settings.json` event

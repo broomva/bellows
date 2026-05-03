@@ -473,11 +473,31 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         counter.clone(),
         path_policy.clone(),
     );
+
+    if std::env::var("BELLOWS_MODE").as_deref() == Ok("server") {
+        // Server mode — opens an HTTP API + a phone-friendly web UI on port 3548.
+        let example = serde_json::json!({
+            "start_path": ".",
+            "question": "What is this project, what crates does its workspace contain, and what is its license? Answer in one paragraph.",
+        });
+        let example_str = serde_json::to_string_pretty(&example).map_err(BellowsError::from)?;
+        bellows_server::Server::new(workflow)
+            .with_example_input(example_str)
+            .with_hook(Arc::new(TracingHook))
+            .with_hook(counter)
+            .with_hook(path_policy)
+            .with_hook(Arc::new(AllowDenyHook::deny_list(["fs_write"])))
+            .run()
+            .await?;
+        return Ok(());
+    }
+
+    // CLI one-shot mode.
     let store = Arc::new(MemoryStore::new());
     let engine = Engine::new(workflow, store)
         .with_hook(Arc::new(TracingHook))
-        .with_hook(counter.clone())
-        .with_hook(path_policy.clone())
+        .with_hook(counter)
+        .with_hook(path_policy)
         .with_hook(Arc::new(AllowDenyHook::deny_list(["fs_write"])));
 
     let start_path = std::env::var("BELLOWS_START_PATH").unwrap_or_else(|_| ".".to_string());

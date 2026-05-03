@@ -17,6 +17,7 @@ bellows-model          = { path = "../../crates/bellows-model" }
 bellows-runtime        = { path = "../../crates/bellows-runtime" }
 bellows-sandbox        = { path = "../../crates/bellows-sandbox" }
 bellows-sandbox-local  = { path = "../../crates/bellows-sandbox-local" }
+bellows-server         = { path = "../../crates/bellows-server" }
 bellows-session        = { path = "../../crates/bellows-session" }
 bellows-tool           = { path = "../../crates/bellows-tool" }
 

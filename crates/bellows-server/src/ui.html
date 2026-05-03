@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0e13" />
+  <title>{{AGENT_NAME}} — bellows</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0e13;
+      --panel: #11151c;
+      --panel-2: #161b25;
+      --border: #232a36;
+      --ink: #e6ebf2;
+      --muted: #9aa6b6;
+      --accent: #ffaa3b;
+      --accent-2: #ff7a3b;
+      --ok: #6ee7b7;
+      --err: #ff7480;
+      --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      min-height: 100vh;
+      padding: 16px;
+      padding-bottom: env(safe-area-inset-bottom, 16px);
+    }
+    .wrap { max-width: 760px; margin: 0 auto; }
+    header { display: flex; align-items: baseline; gap: 12px; padding: 8px 0 16px; }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    h1 .glyph { color: var(--accent); }
+    .sub { color: var(--muted); font-size: 13px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    input[type="text"], textarea, select {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: 14px/1.5 var(--mono);
+      outline: none;
+    }
+    input[type="text"]:focus, textarea:focus {
+      border-color: var(--accent);
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    button {
+      appearance: none;
+      border: 0;
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      color: #1a1208;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: 0.02em;
+      padding: 12px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      width: 100%;
+      min-height: 48px;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .small {
+      background: var(--panel-2);
+      color: var(--ink);
+      font-weight: 500;
+      padding: 8px 12px;
+      width: auto;
+      min-height: 36px;
+      font-size: 13px;
+    }
+    pre {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      overflow-x: auto;
+      font: 12px/1.5 var(--mono);
+      color: var(--ink);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+    .stat {
+      display: inline-block;
+      font-family: var(--mono);
+      font-size: 12px;
+      padding: 4px 8px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-right: 6px;
+      color: var(--muted);
+    }
+    .stat b { color: var(--ink); }
+    .ok { color: var(--ok); }
+    .err { color: var(--err); }
+    .muted { color: var(--muted); }
+    .grow { flex-grow: 1; }
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 16px 0;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    .agent-pill {
+      display: inline-flex;
+      gap: 6px;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .agent-pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1><span class="glyph">⌬</span> bellows</h1>
+      <span class="agent-pill"><span class="dot"></span> {{AGENT_NAME}}</span>
+    </header>
+
+    <div class="panel">
+      <label for="endpoint">Endpoint</label>
+      <input id="endpoint" type="text" value="/v1/agents/{{AGENT_NAME}}" />
+    </div>
+
+    <div class="panel">
+      <label for="input">Request body (JSON)</label>
+      <textarea id="input" spellcheck="false">{{EXAMPLE_INPUT}}</textarea>
+      <div class="row" style="margin-top: 10px">
+        <button id="run">Run agent</button>
+      </div>
+    </div>
+
+    <div class="panel" id="status-panel" style="display:none">
+      <div class="row" id="status-row"></div>
+    </div>
+
+    <div class="panel" id="output-panel" style="display:none">
+      <label>Response</label>
+      <pre id="output"></pre>
+    </div>
+
+    <footer>
+      <span class="muted">bellows v{{VERSION}} · port 3548 · </span>
+      <a href="/healthz">healthz</a>
+    </footer>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const button = $('run');
+    const out = $('output');
+    const outPanel = $('output-panel');
+    const statusPanel = $('status-panel');
+    const statusRow = $('status-row');
+
+    function setStatus(html) {
+      statusRow.innerHTML = html;
+      statusPanel.style.display = '';
+    }
+    function showOutput(text, isError) {
+      out.textContent = text;
+      out.className = isError ? 'err' : '';
+      outPanel.style.display = '';
+    }
+
+    async function run() {
+      const endpoint = $('endpoint').value.trim();
+      const raw = $('input').value;
+      let body;
+      try {
+        body = JSON.parse(raw);
+      } catch (e) {
+        showOutput('Invalid JSON: ' + e.message, true);
+        return;
+      }
+
+      button.disabled = true;
+      const oldLabel = button.textContent;
+      button.textContent = 'Running…';
+      setStatus('<span class="stat">running…</span>');
+      outPanel.style.display = 'none';
+
+      const t0 = performance.now();
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const ms = Math.round(performance.now() - t0);
+        const text = await res.text();
+        let pretty = text;
+        try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (_) {}
+
+        const ok = res.ok;
+        const stats = [
+          `<span class="stat ${ok ? 'ok' : 'err'}">HTTP <b>${res.status}</b></span>`,
+          `<span class="stat">latency <b>${ms}ms</b></span>`,
+          `<span class="stat">bytes <b>${text.length}</b></span>`,
+        ];
+        // try pulling provider/usage out of structured output
+        try {
+          const j = JSON.parse(text);
+          if (j.provider) stats.push(`<span class="stat">provider <b>${j.provider}</b></span>`);
+          if (j.usage) stats.push(`<span class="stat">tokens <b>${j.usage.input_tokens}/${j.usage.output_tokens}</b></span>`);
+          if (j.turns) stats.push(`<span class="stat">turns <b>${j.turns}</b></span>`);
+          if (j.session_id) stats.push(`<span class="stat">session <b>${j.session_id.slice(0,8)}…</b></span>`);
+        } catch (_) {}
+
+        setStatus(stats.join(''));
+        showOutput(pretty, !ok);
+      } catch (e) {
+        const ms = Math.round(performance.now() - t0);
+        setStatus(`<span class="stat err">network error</span><span class="stat">latency <b>${ms}ms</b></span>`);
+        showOutput(String(e), true);
+      } finally {
+        button.disabled = false;
+        button.textContent = oldLabel;
+      }
+    }
+
+    button.addEventListener('click', run);
+    $('input').addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    });
+  </script>
+</body>
+</html>

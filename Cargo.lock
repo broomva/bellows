@@ -212,6 +212,7 @@ dependencies = [
  "bellows-runtime",
  "bellows-sandbox",
  "bellows-sandbox-local",
+ "bellows-server",
  "bellows-session",
  "bellows-tool",
  "serde",

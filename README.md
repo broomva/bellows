@@ -91,6 +91,7 @@ curl http://localhost:3548/healthz
 
 ## Documentation map
 
+- **[docs/RUNNING.md](docs/RUNNING.md)** — how to run an agent (CLI, HTTP server, public URL via cloudflared / Tailscale, phone access).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — full architecture, traits, control flow.
 - **[docs/DEPENDENCY-CHAIN.md](docs/DEPENDENCY-CHAIN.md)** — every dependency, every layer, every justification.
 - **[docs/ROADMAP.md](docs/ROADMAP.md)** — v0.1 → v1.0 plan with explicit gates.
