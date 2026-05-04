@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 # Bellows — multi-stage build for the repo-scout example agent.
 # Targets a minimal runtime image (debian-slim, ~70 MB) with a statically-
 # linked-ish Rust binary. CA certs are needed for HTTPS to api.anthropic.com.
@@ -26,9 +25,7 @@ RUN apt-get update \
 # full build is fast.
 COPY . .
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
-    cargo build --release --locked --bin "${BIN}" \
+RUN cargo build --release --locked --bin "${BIN}" \
  && cp "/build/target/release/${BIN}" "/build/bin"
 
 # ── Runtime ────────────────────────────────────────────────────────────────
