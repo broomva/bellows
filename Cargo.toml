@@ -15,6 +15,7 @@ members = [
     # "crates/bellows-build",            # codegen + cargo orchestration, v0.2
     # "crates/bellows-macros",           # proc-macros, v0.2
     "crates/bellows-cli",
+    "examples/chat-agent",
     "examples/issue-triage",
     "examples/repo-scout",
 ]

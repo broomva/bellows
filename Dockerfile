@@ -6,7 +6,7 @@
 # repo-scout (the demo agent). To deploy a different agent: pass
 # `--build-arg BIN=my-agent` at build time.
 
-ARG BIN=repo-scout
+ARG BIN=chat-agent
 ARG RUST_VERSION=1.85
 
 # ── Builder ────────────────────────────────────────────────────────────────
