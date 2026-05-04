@@ -49,13 +49,22 @@ pub struct Server<W: Workflow> {
 impl<W: Workflow + 'static> Server<W> {
     /// Build a server with default address `0.0.0.0:DEFAULT_PORT` and an
     /// in-memory session store.
+    ///
+    /// Honors the standard `PORT` environment variable when set (this is
+    /// what Railway, Fly, Render, Heroku, and friends inject into the
+    /// runtime). When `PORT` is unset or unparseable, falls back to
+    /// [`DEFAULT_PORT`].
     #[must_use]
     pub fn new(workflow: W) -> Self {
+        let port = std::env::var("PORT")
+            .ok()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT);
         let store = Arc::new(MemoryStore::new());
         let workflow_name = workflow.name().to_string();
         Self {
             engine: Engine::new(workflow, store),
-            addr: SocketAddr::from(([0, 0, 0, 0], DEFAULT_PORT)),
+            addr: SocketAddr::from(([0, 0, 0, 0], port)),
             workflow_name,
             example_input: DEFAULT_EXAMPLE_INPUT.to_string(),
         }
