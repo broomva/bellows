@@ -35,6 +35,7 @@ pub mod sandbox;
 pub mod session;
 pub mod skill;
 pub mod step;
+pub mod stream;
 pub mod tool;
 pub mod workflow;
 
@@ -44,11 +45,15 @@ pub use hook::{
     TracingHook,
 };
 pub use message::{Message, MsgRole, ToolCall, ToolResult};
-pub use model::{ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelUsage, StopReason};
+pub use model::{
+    ModelProvider, ModelRequest, ModelResponse, ModelStream, ModelStreamEvent, ModelUsage,
+    StopReason,
+};
 pub use role::{Role, RoleScope};
 pub use sandbox::{DirEntry, ExecOpts, ExecResult, Sandbox};
 pub use session::{Session, SessionId, SessionStore};
 pub use skill::{Skill, SkillSet};
 pub use step::{DEFAULT_INFERENCE_MAX_TURNS, InferenceRequest, Step, StepCtx};
+pub use stream::{BufferSink, StreamEvent, StreamSink, format_tool_label, tool_end_event};
 pub use tool::{Tool, ToolRegistry, ToolSchema};
 pub use workflow::Workflow;

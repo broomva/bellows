@@ -22,12 +22,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use tracing::Instrument;
 
 use crate::{
     BellowsError, HookCtx, HookOutcome, HookRegistry, InferenceHookOutcome, Message, ModelProvider,
-    ModelRequest, MsgRole, Result, Role, Sandbox, Session, SkillSet, StopReason, Tool,
-    ToolHookOutcome, ToolRegistry, ToolResult, ToolSchema,
+    ModelRequest, ModelResponse, ModelStreamEvent, ModelUsage, MsgRole, Result, Role, Sandbox,
+    Session, SkillSet, StopReason, Tool, ToolCall, ToolHookOutcome, ToolRegistry, ToolResult,
+    ToolSchema,
+    stream::{StreamEvent, StreamSink, format_tool_label, tool_end_event},
 };
 
 /// Soft cap on autonomous-loop iterations to prevent runaway agents.
@@ -79,6 +82,11 @@ pub struct StepCtx<'a> {
     /// Tracing span the runtime opened around this step. Children should be
     /// created via `tracing::info_span!(parent: &ctx.trace, ...)`.
     pub trace: tracing::Span,
+    /// Optional streaming sink. When set (by the runtime's `run_streaming`
+    /// path), [`StepCtx::run_inference`] auto-routes to the streaming
+    /// loop and emits per-delta events; existing workflows pick up real
+    /// streaming with zero source changes. `None` = buffered loop.
+    pub stream_sink: Option<Arc<dyn StreamSink>>,
 }
 
 /// Configuration for a single autonomous-loop invocation.
@@ -238,7 +246,16 @@ impl StepCtx<'_> {
     ///   [`BellowsError::Tool`] with `name` set.
     /// - Hitting `req.max_turns` returns [`BellowsError::Workflow`] so the
     ///   workflow body can catch and recover if needed.
+    ///
+    /// **Streaming mode:** when the runtime constructed this `StepCtx`
+    /// via [`Engine::run_streaming`], `self.stream_sink` is `Some(_)` and
+    /// this method transparently routes to
+    /// [`StepCtx::run_inference_streaming`], so existing workflows pick
+    /// up real-time streaming with zero source changes.
     pub async fn run_inference(&mut self, req: &InferenceRequest) -> Result<Message> {
+        if let Some(sink) = self.stream_sink.clone() {
+            return self.run_inference_streaming(req, sink.as_ref()).await;
+        }
         let tool_schemas: Vec<ToolSchema> = self.tools.list().iter().map(|t| t.schema()).collect();
 
         for turn in 0..req.max_turns {
@@ -346,7 +363,21 @@ impl StepCtx<'_> {
     /// `on_post_tool_use` (which may mutate the result or convert it to
     /// an error). Calls are dispatched **sequentially** in v0.1;
     /// parallel dispatch via `FuturesOrdered` lands in v0.4.
-    async fn dispatch_tool_calls(&self, calls: &[crate::ToolCall]) -> Result<Vec<ToolResult>> {
+    async fn dispatch_tool_calls(&self, calls: &[ToolCall]) -> Result<Vec<ToolResult>> {
+        self.dispatch_tool_calls_with_sink(calls, None, 0).await
+    }
+
+    /// Variant of `dispatch_tool_calls` that, when `sink` is `Some`,
+    /// emits one [`StreamEvent::ToolUseStart`] before invoking each
+    /// tool and one [`StreamEvent::ToolUseEnd`] after. Used by
+    /// `run_inference_streaming`. The non-streaming path passes
+    /// `None` so behavior is byte-identical.
+    async fn dispatch_tool_calls_with_sink(
+        &self,
+        calls: &[ToolCall],
+        sink: Option<&dyn StreamSink>,
+        turn: u32,
+    ) -> Result<Vec<ToolResult>> {
         let mut out = Vec::with_capacity(calls.len());
         for call in calls {
             let mut call = call.clone();
@@ -368,6 +399,24 @@ impl StepCtx<'_> {
                         }
                     }
                 }
+            }
+
+            // Whether this call was stopped by a hook deny — needed for the
+            // ToolUseEnd event's `denied` flag.
+            let denied = matches!(hook_outcome, ToolHookOutcome::Deny(_));
+
+            // Emit ToolUseStart only after hooks have observed (so a
+            // stub-replacing hook can mutate `call.arguments` and the
+            // `label` we emit reflects what actually got invoked).
+            if let Some(s) = sink {
+                let label = format_tool_label(&call.name, &call.arguments);
+                s.emit(StreamEvent::ToolUseStart {
+                    turn,
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    label,
+                })
+                .await?;
             }
 
             let mut result = match hook_outcome {
@@ -432,8 +481,246 @@ impl StepCtx<'_> {
                 }
             }
 
+            // Emit ToolUseEnd after post-hooks have settled the final result.
+            if let Some(s) = sink {
+                s.emit(tool_end_event(turn, &call, &result, denied)).await?;
+            }
+
             out.push(result);
         }
         Ok(out)
+    }
+
+    /// Streaming sibling of [`StepCtx::run_inference`].
+    ///
+    /// Same loop semantics — model call, optional tool dispatch, repeat
+    /// until a non-tool stop reason or `req.max_turns` — but every
+    /// observable transition is fanned out to `sink` in real time:
+    ///
+    /// - [`StreamEvent::TurnStart`] before each model call.
+    /// - [`StreamEvent::TextDelta`] for each `ModelStreamEvent::TextDelta`.
+    /// - [`StreamEvent::ToolUseStart`] / `ToolUseEnd` around each tool
+    ///   invocation, identical to the non-streaming dispatch path.
+    ///
+    /// The function does NOT emit `SessionStart` or `Done` — those are
+    /// the engine layer's responsibility (the engine wraps the workflow
+    /// invocation, this fn only sees one `run_inference` call).
+    ///
+    /// Tool-call argument deltas (`ModelStreamEvent::ToolCallDelta`) are
+    /// **buffered into the assistant message** rather than fanned out
+    /// — the contract treats them as an implementation detail of the
+    /// upstream provider. The fully-assembled `arguments` JSON is then
+    /// what feeds into `dispatch_tool_calls_with_sink`, so the chat UI
+    /// gets a well-formed `ToolUseStart` with a real label.
+    ///
+    /// Hook lifecycle is preserved: pre-inference hooks see the
+    /// outgoing request, post-inference hooks see the **fully
+    /// accumulated** assistant message (not per-delta partials), and
+    /// per-tool hooks fire identically to the non-streaming path.
+    #[allow(clippy::too_many_lines)]
+    pub async fn run_inference_streaming(
+        &mut self,
+        req: &InferenceRequest,
+        sink: &dyn StreamSink,
+    ) -> Result<Message> {
+        let tool_schemas: Vec<ToolSchema> = self.tools.list().iter().map(|t| t.schema()).collect();
+
+        for turn in 0..req.max_turns {
+            let mut model_request = ModelRequest {
+                model: req.model.clone(),
+                messages: self.session.history.clone(),
+                role: req.role.clone(),
+                tools: tool_schemas.clone(),
+                max_tokens: req.max_tokens,
+                temperature: req.temperature,
+                stop: req.stop.clone(),
+            };
+
+            // Pre-inference hooks — same shape as the buffered loop.
+            if !self.hooks.is_empty() {
+                let hook_ctx = self.hook_ctx();
+                let mut stub: Option<Message> = None;
+                for hook in self.hooks.list() {
+                    match hook.on_pre_inference(&hook_ctx, &mut model_request).await? {
+                        InferenceHookOutcome::Continue => {}
+                        InferenceHookOutcome::Deny(reason) => {
+                            return Err(BellowsError::Workflow(format!(
+                                "hook `{}` denied inference: {reason}",
+                                hook.name()
+                            )));
+                        }
+                        InferenceHookOutcome::Stub(msg) => {
+                            stub = Some(msg);
+                            break;
+                        }
+                    }
+                }
+                if let Some(msg) = stub {
+                    sink.emit(StreamEvent::TurnStart { turn }).await?;
+                    if !msg.content.is_empty() {
+                        sink.emit(StreamEvent::TextDelta {
+                            turn,
+                            delta: msg.content.clone(),
+                        })
+                        .await?;
+                    }
+                    self.session.push(msg.clone());
+                    return Ok(msg);
+                }
+            }
+
+            sink.emit(StreamEvent::TurnStart { turn }).await?;
+
+            let span = tracing::info_span!(
+                parent: &self.trace,
+                "inference.turn.streaming",
+                turn,
+                model = %req.model,
+            );
+            let mut stream = async { self.model.stream(model_request).await }
+                .instrument(span.clone())
+                .await?;
+
+            // Accumulators rebuilt fresh each turn.
+            let mut text_accum = String::new();
+            // Tool calls keyed by id; argument JSON is appended as
+            // ToolCallDelta events arrive.
+            let mut tool_buffers: Vec<ToolCallBuffer> = Vec::new();
+            let mut stop_reason: Option<StopReason> = None;
+            let mut usage: Option<ModelUsage> = None;
+
+            while let Some(item) = stream.next().await {
+                match item? {
+                    ModelStreamEvent::TextDelta { text } => {
+                        if !text.is_empty() {
+                            text_accum.push_str(&text);
+                            sink.emit(StreamEvent::TextDelta { turn, delta: text })
+                                .await?;
+                        }
+                    }
+                    ModelStreamEvent::ToolCallStart { id, name } => {
+                        tool_buffers.push(ToolCallBuffer {
+                            id,
+                            name,
+                            args_buf: String::new(),
+                        });
+                    }
+                    ModelStreamEvent::ToolCallDelta { id, arguments_json } => {
+                        if let Some(buf) = tool_buffers.iter_mut().find(|b| b.id == id) {
+                            buf.args_buf.push_str(&arguments_json);
+                        } else {
+                            tracing::debug!(
+                                tool_id = %id,
+                                "stream: tool_call_delta for unknown id (no prior tool_call_start)"
+                            );
+                        }
+                    }
+                    ModelStreamEvent::EndTurn {
+                        stop_reason: sr,
+                        usage: u,
+                    } => {
+                        stop_reason = Some(sr);
+                        usage = u;
+                    }
+                }
+            }
+
+            let stop = stop_reason.unwrap_or(StopReason::EndTurn);
+            let tool_calls: Vec<ToolCall> = tool_buffers
+                .into_iter()
+                .map(|b| ToolCall {
+                    id: b.id,
+                    name: b.name,
+                    arguments: parse_tool_args(&b.args_buf),
+                })
+                .collect();
+
+            let assistant_msg = Message {
+                role: MsgRole::Assistant,
+                content: text_accum,
+                tool_calls: tool_calls.clone(),
+                tool_results: Vec::new(),
+            };
+
+            // Synthesize a ModelResponse for post-inference hooks. Hooks
+            // see the full accumulated message, never partials — same as
+            // the contract specifies.
+            if !self.hooks.is_empty() {
+                let response = ModelResponse {
+                    message: assistant_msg.clone(),
+                    stop_reason: stop,
+                    usage: usage.clone(),
+                };
+                let hook_ctx = self.hook_ctx();
+                for hook in self.hooks.list() {
+                    if let HookOutcome::Deny(reason) =
+                        hook.on_post_inference(&hook_ctx, &response).await?
+                    {
+                        return Err(BellowsError::Workflow(format!(
+                            "hook `{}` denied response: {reason}",
+                            hook.name()
+                        )));
+                    }
+                }
+            }
+
+            self.session.push(assistant_msg.clone());
+
+            match stop {
+                StopReason::ToolUse => {
+                    if tool_calls.is_empty() {
+                        return Ok(assistant_msg);
+                    }
+                    let results = self
+                        .dispatch_tool_calls_with_sink(&tool_calls, Some(sink), turn)
+                        .await?;
+                    self.session.push(Message {
+                        role: MsgRole::Tool,
+                        content: String::new(),
+                        tool_calls: Vec::new(),
+                        tool_results: results,
+                    });
+                }
+                StopReason::EndTurn
+                | StopReason::MaxTokens
+                | StopReason::StopSequence
+                | StopReason::Other => {
+                    return Ok(assistant_msg);
+                }
+            }
+        }
+
+        Err(BellowsError::Workflow(format!(
+            "run_inference_streaming: exceeded max_turns ({}) without a final stop",
+            req.max_turns
+        )))
+    }
+}
+
+/// Per-call buffer for tool argument JSON streamed via
+/// [`ModelStreamEvent::ToolCallDelta`] events. Held only inside one
+/// turn of `run_inference_streaming`; collapsed into a `ToolCall` at
+/// turn end.
+struct ToolCallBuffer {
+    id: String,
+    name: String,
+    args_buf: String,
+}
+
+/// Parse a streamed tool-argument JSON buffer. Falls back to
+/// `serde_json::Value::Null` if the buffer is empty (model started a
+/// tool call but the stream truncated before any deltas) and to a
+/// `{ "error": ... }` envelope on parse failure so the tool sees a
+/// well-formed value rather than panicking.
+fn parse_tool_args(buf: &str) -> serde_json::Value {
+    if buf.trim().is_empty() {
+        return serde_json::Value::Object(serde_json::Map::new());
+    }
+    match serde_json::from_str(buf) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, raw = %buf, "tool argument JSON did not parse — passing through as error envelope");
+            serde_json::json!({ "_invalid_json": buf, "_parse_error": e.to_string() })
+        }
     }
 }
