@@ -184,6 +184,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bellows-example-bookkeeping-judge"
+version = "0.0.0"
+dependencies = [
+ "async-trait",
+ "bellows-core",
+ "bellows-model",
+ "bellows-runtime",
+ "bellows-sandbox",
+ "bellows-sandbox-local",
+ "bellows-session",
+ "bellows-tool",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bellows-example-chat-agent"
 version = "0.0.0"
 dependencies = [

@@ -26,12 +26,19 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "0BSD",
+    # webpki-roots ≥ 1.0 — Mozilla CA bundle, OSI-approved permissive license.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 
 [bans]
 multiple-versions = "warn"
+# Workspace path dependencies (e.g. examples → ../../crates/bellows-core) do not
+# carry a version requirement and would otherwise trip the wildcard rule. Allow
+# wildcards exclusively for first-party path/git deps; remote-registry wildcards
+# remain a hard error.
 wildcards = "deny"
+allow-wildcard-paths = true
 deny = [
     # bans go here as the dep tree grows
 ]

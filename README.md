@@ -1,5 +1,7 @@
 # Bellows
 
+[![CI](https://github.com/broomva/bellows/actions/workflows/ci.yml/badge.svg)](https://github.com/broomva/bellows/actions/workflows/ci.yml)
+
 > *Pump work into the agent. Catch the heat in the harness.*
 
 **Bellows** is a Rust open-source agent-harness framework — a clean-room
