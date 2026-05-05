@@ -27,7 +27,7 @@ use bellows_core::{
 };
 use bellows_model::{AnthropicAuth, AnthropicProvider, MockProvider};
 use bellows_sandbox_local::LocalSandbox;
-use bellows_tool::{BashTool, FsListTool, FsReadTool};
+use bellows_tool::{BashTool, FsListTool, FsReadTool, FsWriteTool};
 use serde::{Deserialize, Serialize};
 
 // ── I/O shape ────────────────────────────────────────────────────────────────
@@ -52,14 +52,34 @@ pub struct ChatInput {
 pub struct ChatOutput {
     /// Plain-text reply.
     pub answer: String,
-    /// Files Claude opened during the turn (for the UI's Task widget).
+    /// Backwards-compat: files Claude opened with `fs_read` during the turn.
+    /// Older clients (the v0.2-pre Next.js app) read this; the richer
+    /// [`tools`] array below is what new clients should consume.
     pub files_read: Vec<String>,
+    /// Every tool invocation made during this turn — name + a short label
+    /// derived from arguments + a `denied` flag for hook-blocked calls.
+    /// This is what the chat UI's Task widget renders.
+    pub tools: Vec<ToolUse>,
     /// Number of model calls in the autonomous loop for this turn.
     pub turns: u32,
     /// Stable id of the session that produced this output.
     pub session_id: String,
     /// `"anthropic"` or `"mock"`.
     pub provider: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolUse {
+    /// Tool name as advertised in its `ToolSchema` (e.g. `"fs_list"`).
+    pub name: String,
+    /// Short human-readable label for the call (typically the path or
+    /// shell command). Falls back to the JSON-encoded args for tools we
+    /// don't have a special-case formatter for.
+    pub label: String,
+    /// `true` when an `on_pre_tool_use` hook returned `Deny` and the
+    /// runtime synthesised a `tool_result { is_error: true }` instead of
+    /// running the tool.
+    pub denied: bool,
 }
 
 // ── Workflow ─────────────────────────────────────────────────────────────────
@@ -124,6 +144,7 @@ impl Workflow for ChatAgent {
             Arc::new(BashTool),
             Arc::new(FsListTool),
             Arc::new(FsReadTool),
+            Arc::new(FsWriteTool),
         ]
     }
 
@@ -180,27 +201,96 @@ impl Workflow for ChatAgent {
         )
         .unwrap_or(u32::MAX);
 
-        let files_read = ctx
-            .session
-            .history
-            .iter()
-            .flat_map(|m| m.tool_calls.iter())
-            .filter(|tc| tc.name == "fs_read")
-            .filter_map(|tc| {
-                tc.arguments
-                    .get("path")
+        // Pair every assistant tool_call with its corresponding tool_result
+        // so we know which calls were denied by hooks. Hooks synthesise
+        // `tool_result { is_error: true, output: { denied_by: "hook" } }`
+        // when they Deny — that's the marker we look for.
+        let mut denied_call_ids = std::collections::HashSet::new();
+        for msg in &ctx.session.history {
+            for tr in &msg.tool_results {
+                if !tr.is_error {
+                    continue;
+                }
+                let denied = tr
+                    .output
+                    .get("denied_by")
                     .and_then(serde_json::Value::as_str)
-                    .map(String::from)
-            })
-            .collect::<Vec<_>>();
+                    == Some("hook");
+                if denied {
+                    denied_call_ids.insert(tr.call_id.clone());
+                }
+            }
+        }
+
+        let mut tools_vec: Vec<ToolUse> = Vec::new();
+        let mut files_read: Vec<String> = Vec::new();
+        for msg in &ctx.session.history {
+            for tc in &msg.tool_calls {
+                let label = format_tool_label(&tc.name, &tc.arguments);
+                if tc.name == "fs_read" {
+                    if let Some(path) =
+                        tc.arguments.get("path").and_then(serde_json::Value::as_str)
+                    {
+                        files_read.push(path.to_string());
+                    }
+                }
+                tools_vec.push(ToolUse {
+                    name: tc.name.clone(),
+                    label,
+                    denied: denied_call_ids.contains(&tc.id),
+                });
+            }
+        }
 
         Ok(ChatOutput {
             answer: final_msg.content,
             files_read,
+            tools: tools_vec,
             turns,
             session_id: ctx.session.id.to_string(),
             provider: ctx.model.id().to_string(),
         })
+    }
+}
+
+/// Build a short human-readable label for a tool call. Specialised for the
+/// built-in tools; falls back to compact JSON for unknown tools.
+fn format_tool_label(name: &str, args: &serde_json::Value) -> String {
+    let s = |key: &str| {
+        args.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    match name {
+        "fs_list" => s("path").is_empty().then(|| "(no path)".to_string()).unwrap_or(s("path")),
+        "fs_read" => s("path").is_empty().then(|| "(no path)".to_string()).unwrap_or(s("path")),
+        "fs_write" => {
+            let p = s("path");
+            let bytes = args
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .map(|c| c.len())
+                .unwrap_or(0);
+            if p.is_empty() {
+                format!("(no path, {bytes}B)")
+            } else {
+                format!("{p} ({bytes}B)")
+            }
+        }
+        "bash" => {
+            let cmd = s("cmd");
+            if cmd.len() > 80 {
+                format!("{}…", &cmd[..80])
+            } else {
+                cmd
+            }
+        }
+        _ => serde_json::to_string(args)
+            .unwrap_or_default()
+            .chars()
+            .take(80)
+            .collect(),
     }
 }
 
