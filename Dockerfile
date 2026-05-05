@@ -42,6 +42,11 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /build/bin /usr/local/bin/bellows-agent
 
+# `WORKDIR` creates /app owned by root, which would block the bellows user
+# from writing files via the agent's sandbox tools (fs_write, etc).
+# Hand the directory over to the runtime user explicitly.
+RUN chown -R bellows:bellows /app
+
 # Server-mode by default; the example reads BELLOWS_MODEL / BELLOWS_QUESTION
 # / etc. from env.
 ENV BELLOWS_MODE=server \
