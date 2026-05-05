@@ -8,13 +8,19 @@ license     = { workspace = true }
 repository  = { workspace = true }
 
 [dependencies]
-bellows-core = { path = "../bellows-core", version = "0.1.0-pre" }
-async-trait  = { workspace = true }
-futures      = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-reqwest      = { workspace = true }
-tracing      = { workspace = true }
+bellows-core       = { path = "../bellows-core", version = "0.1.0-pre" }
+async-trait        = { workspace = true }
+futures            = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+reqwest            = { workspace = true }
+eventsource-stream = { workspace = true }
+tracing            = { workspace = true }
+
+[dev-dependencies]
+tokio    = { workspace = true, features = ["macros", "rt-multi-thread"] }
+wiremock = { workspace = true }
+insta    = { workspace = true, features = ["json"] }
 
 [features]
 default     = []

@@ -1,0 +1,28 @@
+---
+source: crates/bellows-model/tests/anthropic_stream.rs
+expression: json
+---
+[
+  {
+    "kind": "text_delta",
+    "text": "Let me check."
+  },
+  {
+    "id": "toolu_AAA",
+    "kind": "tool_call_start",
+    "name": "fs_list"
+  },
+  {
+    "arguments_json": "{\"path\":\".\"}",
+    "id": "toolu_AAA",
+    "kind": "tool_call_delta"
+  },
+  {
+    "kind": "end_turn",
+    "stop_reason": "tool_use",
+    "usage": {
+      "input_tokens": 0,
+      "output_tokens": 11
+    }
+  }
+]

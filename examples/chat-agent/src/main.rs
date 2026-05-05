@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bellows_core::{
-    AllowDenyHook, BellowsError, InferenceRequest, Message, MsgRole, ModelProvider, Result, Role,
+    AllowDenyHook, BellowsError, InferenceRequest, Message, ModelProvider, MsgRole, Result, Role,
     Sandbox, Session, StepCtx, Tool, TracingHook, Workflow, skill::EmptySkillSet,
 };
 use bellows_model::{AnthropicAuth, AnthropicProvider, MockProvider};
@@ -228,8 +228,7 @@ impl Workflow for ChatAgent {
             for tc in &msg.tool_calls {
                 let label = format_tool_label(&tc.name, &tc.arguments);
                 if tc.name == "fs_read" {
-                    if let Some(path) =
-                        tc.arguments.get("path").and_then(serde_json::Value::as_str)
+                    if let Some(path) = tc.arguments.get("path").and_then(serde_json::Value::as_str)
                     {
                         files_read.push(path.to_string());
                     }
@@ -263,8 +262,14 @@ fn format_tool_label(name: &str, args: &serde_json::Value) -> String {
             .to_string()
     };
     match name {
-        "fs_list" => s("path").is_empty().then(|| "(no path)".to_string()).unwrap_or(s("path")),
-        "fs_read" => s("path").is_empty().then(|| "(no path)".to_string()).unwrap_or(s("path")),
+        "fs_list" | "fs_read" => {
+            let p = s("path");
+            if p.is_empty() {
+                "(no path)".to_string()
+            } else {
+                p
+            }
+        }
         "fs_write" => {
             let p = s("path");
             let bytes = args

@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use bellows_core::{
     BellowsError, HookCtx, HookOutcome, HookRegistry, ModelProvider, Result, Sandbox, Session,
-    SessionStore, SkillSet, StepCtx, ToolRegistry, Workflow,
+    SessionStore, SkillSet, StepCtx, StopReason, StreamEvent, StreamSink, ToolRegistry, Workflow,
 };
 use bellows_tool::SimpleRegistry;
 use tracing::{Span, info_span};
@@ -148,6 +148,25 @@ impl<W: Workflow> Engine<W> {
         span: &Span,
         input: W::Input,
     ) -> Result<W::Output> {
+        self.invoke_with_sink(session, model, tools, sandbox, span, input, None)
+            .await
+    }
+
+    /// Same wiring as `invoke`, but threads an optional [`StreamSink`]
+    /// down into the [`StepCtx`]. When `Some(_)`, the workflow's
+    /// `run_inference` calls auto-route through
+    /// `run_inference_streaming` with zero workflow-source churn.
+    #[allow(clippy::too_many_arguments)]
+    async fn invoke_with_sink(
+        &self,
+        session: &mut Session,
+        model: Arc<dyn ModelProvider>,
+        tools: Arc<dyn ToolRegistry>,
+        sandbox: Arc<dyn Sandbox>,
+        span: &Span,
+        input: W::Input,
+        sink: Option<Arc<dyn StreamSink>>,
+    ) -> Result<W::Output> {
         let skills: &dyn SkillSet = self.workflow.skills();
         let workflow_name = self.workflow.name();
         let mut ctx = StepCtx {
@@ -159,7 +178,148 @@ impl<W: Workflow> Engine<W> {
             hooks: self.hooks.clone(),
             workflow_name,
             trace: span.clone(),
+            stream_sink: sink,
         };
         self.workflow.execute(&mut ctx, input).await
+    }
+
+    /// Streaming sibling of [`Engine::run`].
+    ///
+    /// Same wiring as `run` — fresh session, model + sandbox + tools +
+    /// hooks built from the workflow — but every observable
+    /// transition is fanned out to `sink` in real time:
+    ///
+    /// 1. `SessionStart` (with `session_id`, provider id, model id) —
+    ///    immediately, before any hooks fire.
+    /// 2. The workflow's `run_inference` calls automatically use the
+    ///    streaming model path (because `StepCtx::stream_sink` is
+    ///    populated). They emit `TurnStart`, `TextDelta`, and
+    ///    `ToolUseStart`/`End` events as the model produces them.
+    /// 3. After `Workflow::execute` returns, `Done` (with `turns`,
+    ///    `stop_reason`, and the same `session_id`).
+    /// 4. On any error path, `Error` (with the stringified
+    ///    `BellowsError`) and the run aborts.
+    ///
+    /// The `Output` value the workflow returned is intentionally NOT
+    /// re-emitted on the wire — the SSE contract handles tool summaries
+    /// via `Done`'s shape. Callers that need the typed `Output`
+    /// concurrently with the stream can wrap their workflow in one that
+    /// pushes via a side channel; for the common chat case the streamed
+    /// events are already the full UI payload.
+    #[allow(clippy::too_many_lines)]
+    pub async fn run_streaming(&self, input: W::Input, sink: Arc<dyn StreamSink>) -> Result<()> {
+        let mut session = Session::new();
+        let span = info_span!("workflow.run_streaming", name = self.workflow.name(), session = %session.id);
+
+        let model = self.workflow.model();
+        let sandbox = self.workflow.sandbox();
+        let tools_vec = self.workflow.tools();
+        let mut registry = SimpleRegistry::new();
+        for t in tools_vec {
+            registry.register(t);
+        }
+        let tools: Arc<dyn ToolRegistry> = Arc::new(registry);
+
+        // Always emit SessionStart first so consumers can latch the id
+        // even if the workflow denies in on_workflow_start.
+        sink.emit(StreamEvent::SessionStart {
+            session_id: session.id.to_string(),
+            provider: model.id().to_string(),
+            model: String::new(), // model id is per-step, not per-engine; clients can read from TurnStart context
+        })
+        .await?;
+
+        if !self.hooks.is_empty() {
+            let hook_ctx = HookCtx {
+                workflow_name: self.workflow.name(),
+                session: &session,
+                trace: &span,
+            };
+            for hook in self.hooks.list() {
+                if let HookOutcome::Deny(reason) = hook.on_workflow_start(&hook_ctx).await? {
+                    let msg = format!("hook `{}` denied workflow start: {reason}", hook.name());
+                    sink.emit(StreamEvent::Error {
+                        message: msg.clone(),
+                    })
+                    .await?;
+                    return Err(BellowsError::Workflow(msg));
+                }
+            }
+        }
+
+        let result = self
+            .invoke_with_sink(
+                &mut session,
+                model,
+                tools,
+                sandbox,
+                &span,
+                input,
+                Some(sink.clone()),
+            )
+            .await;
+
+        if !self.hooks.is_empty() {
+            let succeeded = result.is_ok();
+            let hook_ctx = HookCtx {
+                workflow_name: self.workflow.name(),
+                session: &session,
+                trace: &span,
+            };
+            for hook in self.hooks.list() {
+                match hook.on_workflow_end(&hook_ctx, succeeded).await {
+                    Ok(HookOutcome::Continue) => {}
+                    Ok(HookOutcome::Deny(reason)) => {
+                        tracing::warn!(
+                            hook = hook.name(),
+                            workflow = self.workflow.name(),
+                            "post-workflow deny ignored: {reason}"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            hook = hook.name(),
+                            workflow = self.workflow.name(),
+                            error = %err,
+                            "post-workflow hook error ignored"
+                        );
+                    }
+                }
+            }
+        }
+
+        match result {
+            Ok(_) => {
+                let turns = u32::try_from(
+                    session
+                        .history
+                        .iter()
+                        .filter(|m| matches!(m.role, bellows_core::MsgRole::Assistant))
+                        .count(),
+                )
+                .unwrap_or(u32::MAX);
+                // Stop reason: derive from the final assistant message —
+                // we don't have a typed channel back from
+                // `run_inference_streaming`, so default to EndTurn for
+                // successful exits. Workflows that need precise
+                // stop_reason reporting can emit it themselves via the
+                // hook layer.
+                sink.emit(StreamEvent::Done {
+                    turns,
+                    stop_reason: StopReason::EndTurn,
+                    session_id: session.id.to_string(),
+                })
+                .await?;
+                self.store.save(&session).await?;
+                Ok(())
+            }
+            Err(err) => {
+                sink.emit(StreamEvent::Error {
+                    message: err.to_string(),
+                })
+                .await?;
+                Err(err)
+            }
+        }
     }
 }
